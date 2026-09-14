@@ -24,7 +24,7 @@ static void custom_actions_init (CustomActions *self) {}
 static void custom_actions_class_finalize (CustomActionsClass *klass) {}
 
 /* -------------------------------------------------------------------------- */
-/* 1. Действие: Копирование пути                                              */
+/* 1. Действие: Копирование пути (с раскрытием симлинков)                      */
 /* -------------------------------------------------------------------------- */
 static void
 on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
@@ -47,23 +47,58 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
         if (!path)
             continue;
 
+        g_autofree gchar *target_path = NULL;
+
+        /* Проверяем: является ли объект симлинком */
+        if (g_file_test (path, G_FILE_TEST_IS_SYMLINK))
+        {
+            /* 1. Пытаемся получить полный канонический путь цели через realpath */
+            char *resolved = realpath (path, NULL);
+            if (resolved)
+            {
+                target_path = g_strdup (resolved);
+                free (resolved);
+            }
+            else
+            {
+                /* 2. Fallback: если ссылка "битая" (файла назначения нет), 
+                      всё равно читаем путь, на который она указывает */
+                g_autofree gchar *raw_link = g_file_read_link (path, NULL);
+                if (raw_link)
+                {
+                    if (g_path_is_absolute (raw_link))
+                    {
+                        target_path = g_strdup (raw_link);
+                    }
+                    else
+                    {
+                        g_autofree gchar *parent_dir = g_path_get_dirname (path);
+                        target_path = g_build_filename (parent_dir, raw_link, NULL);
+                    }
+                }
+            }
+        }
+
+        /* Если это обычный файл/папка или резолв не удался — берем исходный путь */
+        const gchar *final_path = target_path ? target_path : path;
+
         if (!first)
             g_string_append_c (text, '\n');
         first = FALSE;
 
-        /* Сокращаем $HOME до ~ */
-        if (home && g_strcmp0 (path, home) == 0)
+        /* Сокращаем $HOME до ~ (работает и для раскрытых симлинков) */
+        if (home && g_strcmp0 (final_path, home) == 0)
         {
             g_string_append (text, "~");
         }
-        else if (home && g_str_has_prefix (path, home) && path[home_len] == '/')
+        else if (home && g_str_has_prefix (final_path, home) && final_path[home_len] == '/')
         {
             g_string_append_c (text, '~');
-            g_string_append (text, path + home_len);
+            g_string_append (text, final_path + home_len);
         }
         else
         {
-            g_string_append (text, path);
+            g_string_append (text, final_path);
         }
     }
 
@@ -81,7 +116,7 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
 }
 
 /* -------------------------------------------------------------------------- */
-/* 2. Действие: Открыть / Редактировать как root                              */
+/* 2. Действие: Открыть / Редактировать как root (через kgx + micro)           */
 /* -------------------------------------------------------------------------- */
 static void
 on_open_as_root_activated (NautilusMenuItem *item, gpointer user_data)
@@ -107,16 +142,8 @@ on_open_as_root_activated (NautilusMenuItem *item, gpointer user_data)
     else
     {
         /* Файлы открываем в micro через kgx от имени root */
-        /* Если у вас kgx или ptyxis — просто замените бинарник в argv */
-        const gchar *argv[] = { 
-            "kgx", 
-            "--title=Редактор root", 
-            "--", 
-            "sudo", 
-            "micro", 
-            path, 
-            NULL 
-        };
+        g_autofree gchar *exec_cmd = g_strdup_printf ("sudo micro \"%s\"", path);
+        const gchar *argv[] = { "kgx", "-e", exec_cmd, NULL };
 
         g_spawn_async (NULL, (gchar **) argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
     }
