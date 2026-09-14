@@ -6,6 +6,12 @@
 #include <stdlib.h>
 #include <limits.h>
 
+/* Счётчик для генерации уникальных ID пунктов меню (защита от коллизий в GTK/GAction) */
+static guint g_action_counter = 0;
+
+/* Указатель на текущий активный процесс Zenity (для реализации Single Instance) */
+static GSubprocess *g_active_zenity_proc = NULL;
+
 /* -------------------------------------------------------------------------- */
 /* Структура и управление конфигурацией                                       */
 /* -------------------------------------------------------------------------- */
@@ -27,12 +33,6 @@ app_config_free (AppConfig *config)
     g_free (config);
 }
 
-/**
- * ensure_default_config_exists:
- * @config_path: Полный путь к файлу конфигурации
- *
- * Если конфига нет, создаёт директорию и дефолтный шаблон config.ini с комментариями.
- */
 static void
 ensure_default_config_exists (const gchar *config_path)
 {
@@ -56,12 +56,6 @@ ensure_default_config_exists (const gchar *config_path)
     g_file_set_contents (config_path, default_content, -1, NULL);
 }
 
-/**
- * app_config_load:
- *
- * Загружает настройки из ~/.config/nautilus-custom-actions/config.ini.
- * Возвращает: структуру AppConfig с загруженными или дефолтными значениями.
- */
 static AppConfig *
 app_config_load (void)
 {
@@ -142,33 +136,64 @@ static void custom_actions_class_finalize (CustomActionsClass *klass) {}
 /* -------------------------------------------------------------------------- */
 /* Вспомогательный хелпер: Запуск команд в терминале                           */
 /* -------------------------------------------------------------------------- */
-
-/**
- * launch_in_terminal:
- * @terminal: Имя эмулятора терминала
- * @command: Команда для исполнения
- */
 static void
 launch_in_terminal (const gchar *terminal, const gchar *command)
 {
-    /* kgx (GNOME Console) */
-    if (g_strcmp0 (terminal, "kgx") == 0 || g_strcmp0 (terminal, "gnome-console") == 0)
+    gint term_argc = 0;
+    gchar **term_argv = NULL;
+
+    if (!g_shell_parse_argv (terminal, &term_argc, &term_argv, NULL) || term_argc == 0)
     {
-        const gchar *argv[] = { "kgx", "-e", command, NULL };
-        g_spawn_async (NULL, (gchar **) argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+        const gchar *fallback_argv[] = { "kgx", "--", "sh", "-c", command, NULL };
+        g_spawn_async (NULL, (gchar **) fallback_argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+        return;
     }
-    /* gnome-terminal */
-    else if (g_strcmp0 (terminal, "gnome-terminal") == 0)
+
+    GPtrArray *argv_array = g_ptr_array_new ();
+    for (int i = 0; i < term_argc; i++)
+        g_ptr_array_add (argv_array, term_argv[i]);
+
+    const gchar *last_token = term_argv[term_argc - 1];
+
+    /* kgx / gnome-terminal / ptyxis используют разделитель '--' */
+    if (g_strcmp0 (last_token, "kgx") == 0 ||
+        g_strcmp0 (last_token, "gnome-console") == 0 ||
+        g_strcmp0 (last_token, "gnome-terminal") == 0 ||
+        g_strcmp0 (last_token, "ptyxis") == 0)
     {
-        const gchar *argv[] = { "gnome-terminal", "--", "sh", "-c", command, NULL };
-        g_spawn_async (NULL, (gchar **) argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+        g_ptr_array_add (argv_array, "--");
+        g_ptr_array_add (argv_array, "sh");
+        g_ptr_array_add (argv_array, "-c");
+        g_ptr_array_add (argv_array, (gchar *) command);
     }
-    /* Универсальный запуск через флаг -e (ptyxis, ghostty, alacritty, foot, kitty) */
+    /* Terminator принимает всю команду целиком после флага -e */
+    else if (g_strcmp0 (last_token, "terminator") == 0)
+    {
+        g_ptr_array_add (argv_array, "-e");
+        g_ptr_array_add (argv_array, (gchar *) command);
+    }
+    /* kitty и foot принимают команду напрямую */
+    else if (g_strcmp0 (last_token, "kitty") == 0 || g_strcmp0 (last_token, "foot") == 0)
+    {
+        g_ptr_array_add (argv_array, "sh");
+        g_ptr_array_add (argv_array, "-c");
+        g_ptr_array_add (argv_array, (gchar *) command);
+    }
+    /* ghostty / alacritty */
     else
     {
-        const gchar *argv[] = { terminal, "-e", command, NULL };
-        g_spawn_async (NULL, (gchar **) argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+        g_ptr_array_add (argv_array, "-e");
+        g_ptr_array_add (argv_array, "sh");
+        g_ptr_array_add (argv_array, "-c");
+        g_ptr_array_add (argv_array, (gchar *) command);
     }
+
+    g_ptr_array_add (argv_array, NULL);
+
+    g_spawn_async (NULL, (gchar **) argv_array->pdata, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+
+    g_ptr_array_free (argv_array, TRUE);
+    g_strfreev (term_argv);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -234,29 +259,128 @@ get_ssh_hosts (void)
     return hosts;
 }
 
+/* Структура данных для асинхронного диалога Zenity */
 typedef struct {
-    gchar *host;
-    gchar *path;
-} MountPayload;
+    gchar *target_path;
+} ZenityDialogData;
 
 static void
-mount_payload_free (MountPayload *data)
+on_zenity_dialog_finished (GObject *source_object, GAsyncResult *res, gpointer user_data)
 {
-    if (!data) return;
-    g_free (data->host);
-    g_free (data->path);
+    ZenityDialogData *data = (ZenityDialogData *) user_data;
+    GSubprocess *proc = G_SUBPROCESS (source_object);
+    g_autofree gchar *stdout_buf = NULL;
+    g_autoptr (GError) err = NULL;
+
+    g_subprocess_communicate_utf8_finish (proc, res, &stdout_buf, NULL, &err);
+
+    if (g_active_zenity_proc == proc)
+        g_clear_object (&g_active_zenity_proc);
+
+    if (!err && g_subprocess_get_successful (proc) && stdout_buf)
+    {
+        gchar *selected_host = g_strstrip (stdout_buf);
+        if (strlen (selected_host) > 0)
+        {
+            /* 
+             * 1. SSH_ASKPASS вызывает графическое окно пароля Zenity
+             * 2. StrictHostKeyChecking=accept-new сам подтверждает новые сертификаты
+             */
+            g_autofree gchar *cmd = g_strdup_printf (
+                "env SSH_ASKPASS_REQUIRE=force SSH_ASKPASS=zenity-askpass-wrapper "
+                "sshfs '%s:' '%s' -o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,follow_symlinks,StrictHostKeyChecking=accept-new",
+                selected_host, data->target_path
+            );
+            
+            g_spawn_command_line_async (cmd, NULL);
+
+            g_spawn_command_line_async (cmd, NULL);
+        }
+    }
+
+    g_free (data->target_path);
     g_free (data);
 }
-
+/**
+ * on_mount_dialog_activated:
+ * Асинхронный вызов Zenity с поддержкой Single Instance.
+ */
 static void
-on_mount_ssh_activated (NautilusMenuItem *item, gpointer user_data)
+on_mount_dialog_activated (NautilusMenuItem *item, gpointer user_data)
 {
-    MountPayload *data = (MountPayload *) user_data;
-    g_autofree gchar *cmd = g_strdup_printf (
-        "sshfs \"%s:/\" \"%s\" -o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,follow_symlinks",
-        data->host, data->path
+    gchar *target_path = (gchar *) user_data;
+
+    /* Single Instance: закрываем предыдущий экземпляр Zenity, если он уже открыт */
+    if (g_active_zenity_proc != NULL)
+    {
+        g_subprocess_force_exit (g_active_zenity_proc);
+        g_clear_object (&g_active_zenity_proc);
+    }
+
+    GList *ssh_hosts = get_ssh_hosts ();
+    if (!ssh_hosts)
+    {
+        const gchar *notify_argv[] = {
+            "notify-send",
+            "-u", "normal",
+            "-i", "dialog-information",
+            "SSHFS",
+            "В ~/.ssh/config не найдено настроенных хостов",
+            NULL
+        };
+        g_spawn_async (NULL, (gchar **) notify_argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+        return;
+    }
+
+    GPtrArray *argv_array = g_ptr_array_new ();
+    g_ptr_array_add (argv_array, "zenity");
+    g_ptr_array_add (argv_array, "--list");
+    g_ptr_array_add (argv_array, "--title=Монтирование SSHFS");
+    g_ptr_array_add (argv_array, "--text=Выберите сервер для монтирования:");
+    g_ptr_array_add (argv_array, "--column=Сервер");
+    g_ptr_array_add (argv_array, "--width=400");
+    g_ptr_array_add (argv_array, "--height=450");
+
+    for (GList *h = ssh_hosts; h != NULL; h = h->next)
+    {
+        g_ptr_array_add (argv_array, (gchar *) h->data);
+    }
+    g_ptr_array_add (argv_array, NULL);
+
+    g_autoptr (GError) err = NULL;
+    g_autoptr (GSubprocessLauncher) launcher = g_subprocess_launcher_new (
+        G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE
     );
-    g_spawn_command_line_async (cmd, NULL);
+
+    GSubprocess *proc = g_subprocess_launcher_spawnv (
+        launcher,
+        (const gchar * const *) argv_array->pdata,
+        &err
+    );
+
+    g_ptr_array_free (argv_array, TRUE);
+    g_list_free_full (ssh_hosts, g_free);
+
+    if (err)
+    {
+        const gchar *notify_argv[] = {
+            "notify-send",
+            "-u", "critical",
+            "-i", "dialog-error",
+            "Ошибка запуска Zenity",
+            "Убедитесь, что пакет zenity установлен (sudo pacman -S zenity)",
+            NULL
+        };
+        g_spawn_async (NULL, (gchar **) notify_argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+        return;
+    }
+
+    g_active_zenity_proc = g_object_ref (proc);
+
+    ZenityDialogData *data = g_new0 (ZenityDialogData, 1);
+    data->target_path = g_strdup (target_path);
+
+    g_subprocess_communicate_utf8_async (proc, NULL, NULL, on_zenity_dialog_finished, data);
 }
 
 static void
@@ -264,7 +388,28 @@ on_unmount_ssh_activated (NautilusMenuItem *item, gpointer user_data)
 {
     gchar *path = (gchar *) user_data;
     g_autofree gchar *cmd = g_strdup_printf ("fusermount -u \"%s\"", path);
-    g_spawn_command_line_async (cmd, NULL);
+
+    g_autofree gchar *err_out = NULL;
+    gint exit_status = 0;
+
+    g_spawn_command_line_sync (cmd, NULL, &err_out, &exit_status, NULL);
+
+    if (exit_status != 0)
+    {
+        const gchar *msg = (err_out && strlen (g_strstrip (err_out)) > 0)
+                           ? err_out
+                           : "Не удалось отмонтировать точку (возможно, каталог занят другим процессом)";
+
+        const gchar *notify_argv[] = {
+            "notify-send",
+            "-u", "critical",
+            "-i", "dialog-error",
+            "Ошибка размонтирования",
+            msg,
+            NULL
+        };
+        g_spawn_async (NULL, (gchar **) notify_argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -296,7 +441,7 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
 
         g_autofree gchar *target_path = NULL;
 
-        /* Резолв симлинка (если включена опция resolve_symlinks) */
+        /* Резолв симлинка */
         if (config->resolve_symlinks && g_file_test (path, G_FILE_TEST_IS_SYMLINK))
         {
             char *resolved = realpath (path, NULL);
@@ -307,7 +452,6 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
             }
             else
             {
-                /* Ошибка: целевой файл битого симлинка не найден */
                 g_autofree gchar *raw_link = g_file_read_link (path, NULL);
                 if (raw_link)
                 {
@@ -340,7 +484,7 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
             g_string_append_c (text, '\n');
         first = FALSE;
 
-        /* Сокращение $HOME до ~ (если включена опция shorten_home) */
+        /* Сокращение $HOME до ~ */
         if (config->shorten_home && home && g_strcmp0 (final_path, home) == 0)
         {
             g_string_append (text, "~");
@@ -402,25 +546,21 @@ on_open_as_root_activated (NautilusMenuItem *item, gpointer user_data)
 
     if (is_dir)
     {
-        /* Папки открываем в Nautilus через GVFS Admin */
         g_autofree gchar *admin_uri = g_strdup_printf ("admin://%s", path);
         const gchar *argv[] = { "nautilus", admin_uri, NULL };
         g_spawn_async (NULL, (gchar **) argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
     }
     else
     {
-        /* Читаем терминал и редактор из конфига */
         AppConfig *config = app_config_load ();
-
         g_autofree gchar *cmd = g_strdup_printf ("sudo %s \"%s\"", config->editor, path);
         launch_in_terminal (config->terminal, cmd);
-
         app_config_free (config);
     }
 }
 
 /* -------------------------------------------------------------------------- */
-/* 4. Формирование контекстного меню Nautilus                                 */
+/* 4. Контекстное меню для выбранных файлов/папок                             */
 /* -------------------------------------------------------------------------- */
 
 static GList *
@@ -449,8 +589,9 @@ custom_actions_get_file_items (NautilusMenuProvider *provider, GList *files)
         copy_label = g_strdup_printf ("Копировать пути (%u)", len);
     }
 
+    g_autofree gchar *copy_id = g_strdup_printf ("CustomActions::CopyPath_%u", ++g_action_counter);
     NautilusMenuItem *copy_item = nautilus_menu_item_new (
-        "CustomActions::CopyPath",
+        copy_id,
         copy_label,
         "Копирует путь в буфер обмена",
         "edit-copy-symbolic"
@@ -471,11 +612,12 @@ custom_actions_get_file_items (NautilusMenuProvider *provider, GList *files)
         g_autoptr (GFile) location = nautilus_file_info_get_location (first_file);
         g_autofree gchar *target_path = location ? g_file_get_path (location) : NULL;
 
-        /* --- Пункт 2: Открыть папку в VS Code (только для директорий) --- */
+        /* --- Пункт 2: Открыть папку в VS Code (только для папок) --- */
         if (is_dir && target_path)
         {
+            g_autofree gchar *code_id = g_strdup_printf ("CustomActions::OpenInCode_%u", ++g_action_counter);
             NautilusMenuItem *code_item = nautilus_menu_item_new (
-                "CustomActions::OpenInCode",
+                code_id,
                 "Открыть папку в VS Code",
                 "Открыть эту директорию как проект в VS Code",
                 "com.visualstudio.code"
@@ -500,8 +642,9 @@ custom_actions_get_file_items (NautilusMenuProvider *provider, GList *files)
                                          : "Редактировать файл в консольном редакторе от имени root";
         const gchar *root_icon  = is_dir ? "folder-remote-symbolic" : "accessories-text-editor-symbolic";
 
+        g_autofree gchar *root_id = g_strdup_printf ("CustomActions::OpenAsRoot_%u", ++g_action_counter);
         NautilusMenuItem *root_item = nautilus_menu_item_new (
-            "CustomActions::OpenAsRoot",
+            root_id,
             root_label,
             root_tip,
             root_icon
@@ -514,13 +657,14 @@ custom_actions_get_file_items (NautilusMenuProvider *provider, GList *files)
 
         items = g_list_append (items, root_item);
 
-        /* --- Пункт 4: Монтирование / Размонтирование SSHFS (только для директорий) --- */
+        /* --- Пункт 4: Монтирование / Размонтирование SSHFS (ТОЛЬКО для папок) --- */
         if (is_dir && target_path)
         {
             if (is_path_mounted (target_path))
             {
+                g_autofree gchar *unmount_id = g_strdup_printf ("CustomActions::UnmountSSH_%u", ++g_action_counter);
                 NautilusMenuItem *unmount_item = nautilus_menu_item_new (
-                    "CustomActions::UnmountSSH",
+                    unmount_id,
                     "Отмонтировать (SSHFS)",
                     "Отмонтировать удалённый сервер",
                     "media-eject-symbolic"
@@ -535,60 +679,96 @@ custom_actions_get_file_items (NautilusMenuProvider *provider, GList *files)
             }
             else
             {
-                GList *ssh_hosts = get_ssh_hosts ();
-                if (ssh_hosts)
-                {
-                    NautilusMenuItem *mount_root_item = nautilus_menu_item_new (
-                        "CustomActions::MountSSHRoot",
-                        "Примонтировать сервер",
-                        "Примонтировать хост из ~/.ssh/config через SSHFS",
-                        "network-server-symbolic"
-                    );
+                g_autofree gchar *mount_id = g_strdup_printf ("CustomActions::MountSSH_%u", ++g_action_counter);
+                NautilusMenuItem *mount_item = nautilus_menu_item_new (
+                    mount_id,
+                    "Примонтировать сервер...",
+                    "Выбрать сервер из ~/.ssh/config и примонтировать через SSHFS",
+                    "network-server-symbolic"
+                );
 
-                    NautilusMenu *submenu = nautilus_menu_new ();
-                    nautilus_menu_item_set_submenu (mount_root_item, submenu);
+                g_signal_connect_data (mount_item, "activate",
+                                       G_CALLBACK (on_mount_dialog_activated),
+                                       g_strdup (target_path),
+                                       (GClosureNotify) g_free, 0);
 
-                    g_autofree gchar *folder_name = g_path_get_basename (target_path);
-
-                    for (GList *h = ssh_hosts; h != NULL; h = h->next)
-                    {
-                        const gchar *host_name = (const gchar *) h->data;
-                        
-                        g_autofree gchar *item_id = g_strdup_printf ("CustomActions::MountSSH_%s", host_name);
-                        g_autofree gchar *item_label = NULL;
-
-                        if (g_strcmp0 (folder_name, host_name) == 0)
-                            item_label = g_strdup_printf ("★ %s (по имени папки)", host_name);
-                        else
-                            item_label = g_strdup (host_name);
-
-                        NautilusMenuItem *host_sub_item = nautilus_menu_item_new (
-                            item_id,
-                            item_label,
-                            "Монтировать корень сервера",
-                            "folder-remote-symbolic"
-                        );
-
-                        MountPayload *payload = g_new0 (MountPayload, 1);
-                        payload->host = g_strdup (host_name);
-                        payload->path = g_strdup (target_path);
-
-                        g_signal_connect_data (host_sub_item, "activate",
-                                               G_CALLBACK (on_mount_ssh_activated),
-                                               payload,
-                                               (GClosureNotify) mount_payload_free, 0);
-
-                        nautilus_menu_append_item (submenu, host_sub_item);
-                    }
-
-                    g_list_free_full (ssh_hosts, g_free);
-                    items = g_list_append (items, mount_root_item);
-                }
+                items = g_list_append (items, mount_item);
             }
         }
     }
 
     app_config_free (config);
+    return items;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 5. Контекстное меню пустого пространства (Background Menu)                  */
+/* -------------------------------------------------------------------------- */
+
+static GList *
+custom_actions_get_background_items (NautilusMenuProvider *provider,
+                                     NautilusFileInfo     *current_folder)
+{
+    if (!current_folder)
+        return NULL;
+
+    g_autoptr (GFile) location = nautilus_file_info_get_location (current_folder);
+    if (!location)
+        return NULL;
+
+    g_autofree gchar *target_path = g_file_get_path (location);
+    if (!target_path)
+        return NULL;
+
+    GList *items = NULL;
+
+    /* 1. Копировать путь к текущей папке */
+    g_autofree gchar *bg_copy_id = g_strdup_printf ("CustomActions::BgCopyPath_%u", ++g_action_counter);
+    NautilusMenuItem *copy_item = nautilus_menu_item_new (
+        bg_copy_id,
+        "Копировать путь к папке",
+        "Копирует путь текущей папки в буфер обмена",
+        "edit-copy-symbolic"
+    );
+
+    GList *single_list = g_list_append (NULL, current_folder);
+    g_signal_connect_data (copy_item, "activate",
+                           G_CALLBACK (on_copy_path_activated),
+                           nautilus_file_info_list_copy (single_list),
+                           (GClosureNotify) nautilus_file_info_list_free, 0);
+    g_list_free (single_list);
+    items = g_list_append (items, copy_item);
+
+    /* 2. Открыть текущую папку в VS Code */
+    g_autofree gchar *bg_code_id = g_strdup_printf ("CustomActions::BgOpenInCode_%u", ++g_action_counter);
+    NautilusMenuItem *code_item = nautilus_menu_item_new (
+        bg_code_id,
+        "Открыть папку в VS Code",
+        "Открыть текущую директорию как проект в VS Code",
+        "com.visualstudio.code"
+    );
+
+    g_signal_connect_data (code_item, "activate",
+                           G_CALLBACK (on_open_in_code_activated),
+                           g_strdup (target_path),
+                           (GClosureNotify) g_free, 0);
+    items = g_list_append (items, code_item);
+
+    /* 3. Открыть текущую папку как root */
+    g_autofree gchar *bg_root_id = g_strdup_printf ("CustomActions::BgOpenAsRoot_%u", ++g_action_counter);
+    NautilusMenuItem *root_item = nautilus_menu_item_new (
+        bg_root_id,
+        "Открыть как root",
+        "Открыть текущую папку в Nautilus с правами администратора",
+        "folder-remote-symbolic"
+    );
+
+    g_signal_connect_data (root_item, "activate",
+                           G_CALLBACK (on_open_as_root_activated),
+                           g_object_ref (current_folder),
+                           (GClosureNotify) g_object_unref, 0);
+    items = g_list_append (items, root_item);
+
     return items;
 }
 
@@ -600,6 +780,7 @@ static void
 custom_actions_menu_provider_iface_init (NautilusMenuProviderInterface *iface)
 {
     iface->get_file_items = custom_actions_get_file_items;
+    iface->get_background_items = custom_actions_get_background_items;
 }
 
 void

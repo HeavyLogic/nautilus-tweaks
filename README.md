@@ -34,3 +34,6 @@ sudo cp libcustom_actions.so /usr/lib/nautilus/extensions-4/
 ```
 nautilus -q
 ```
+
+## Зависимости
+- zenity
