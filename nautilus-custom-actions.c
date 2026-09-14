@@ -106,14 +106,18 @@ on_open_as_root_activated (NautilusMenuItem *item, gpointer user_data)
     }
     else
     {
-        /* Запуск Sublime Text с правами root через XWayland:
-           1. Разрешаем root подключение к дисплею
-           2. Запускаем Sublime через pkexec с пробросом DISPLAY */
-        const gchar *script =
-            "xhost +si:localuser:root >/dev/null 2>&1\n"
-            "pkexec env DISPLAY=\"$DISPLAY\" XAUTHORITY=\"$XAUTHORITY\" subl \"$1\"\n";
+        /* Файлы открываем в micro через kgx от имени root */
+        /* Если у вас kgx или ptyxis — просто замените бинарник в argv */
+        const gchar *argv[] = { 
+            "kgx", 
+            "--title=Редактор root", 
+            "--", 
+            "sudo", 
+            "micro", 
+            path, 
+            NULL 
+        };
 
-        const gchar *argv[] = { "/bin/sh", "-c", script, "--", path, NULL };
         g_spawn_async (NULL, (gchar **) argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
     }
 }
