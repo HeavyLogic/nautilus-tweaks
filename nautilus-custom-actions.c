@@ -1,4 +1,5 @@
 #include <nautilus-extension.h>
+#include <gtk/gtk.h>
 #include <gio/gio.h>
 #include <gdk/gdk.h>
 #include <string.h>
@@ -22,35 +23,42 @@ typedef struct {
     gboolean  shorten_home;     /* Заменять $HOME на ~ (default: TRUE) */
     gboolean  resolve_symlinks; /* Раскрывать симлинки (default: TRUE) */
     gchar   **remote_dirs;      /* Разрешенные пути для монтирования (default: /mnt/Remote) */
+    gchar    *emblem;           /* Имя эмблемы для смонтированных папок (default: "globe") */
 } AppConfig;
 
-typedef enum {
-    PROTO_SSH,
-    PROTO_FTP
-} ServerProto;
-
 typedef struct {
-    gchar       *name;
-    gchar       *hostname;
-    gchar       *user;
-    gchar       *password;      /* Пароль из ~/.ftp/config (опционально) */
-    gchar       *remote_path;   /* Кастомная стартовая папка */
-    gint         port;
-    ServerProto  proto;
+    gchar    *name;             /* Имя сервера/хоста */
+    gchar    *type_label;       /* Метка типа для Zenity: "SFTP", "FTP", "WEBDAV", "S3" и т.д. */
+    gchar    *remote_path;      /* Кастомная стартовая папка (если задана) */
+    gboolean  is_rclone;        /* TRUE для rclone, FALSE для sshfs */
 } RemoteServer;
 
-/* Структуры для асинхронных колбэков */
 typedef struct {
     gchar *target_path;
 } ZenityDialogData;
 
-typedef struct {
-    gchar *target_path;
-    gchar *host;
-    gchar *user;
-    gchar *remote_path;
-    gint   port;
-} FtpMountData;
+/* -------------------------------------------------------------------------- */
+/* Объявление структуры GObject-плагина                                       */
+/* -------------------------------------------------------------------------- */
+
+typedef struct _CustomActions {
+    GObject parent_instance;
+} CustomActions;
+
+typedef struct _CustomActionsClass {
+    GObjectClass parent_class;
+} CustomActionsClass;
+
+static GType custom_actions_get_type (void);
+static void custom_actions_menu_provider_iface_init (NautilusMenuProviderInterface *iface);
+
+G_DEFINE_DYNAMIC_TYPE_EXTENDED (CustomActions, custom_actions, G_TYPE_OBJECT, 0,
+    G_IMPLEMENT_INTERFACE_DYNAMIC (NAUTILUS_TYPE_MENU_PROVIDER,
+                                   custom_actions_menu_provider_iface_init))
+
+static void custom_actions_class_init (CustomActionsClass *klass) {}
+static void custom_actions_init (CustomActions *self) {}
+static void custom_actions_class_finalize (CustomActionsClass *klass) {}
 
 /* -------------------------------------------------------------------------- */
 /* Освобождение памяти                                                        */
@@ -63,6 +71,7 @@ app_config_free (AppConfig *config)
         return;
     g_free (config->terminal);
     g_free (config->editor);
+    g_free (config->emblem);
     g_strfreev (config->remote_dirs);
     g_free (config);
 }
@@ -70,17 +79,16 @@ app_config_free (AppConfig *config)
 static void
 remote_server_free (RemoteServer *s)
 {
-    if (!s) return;
+    if (!s)
+        return;
     g_free (s->name);
-    g_free (s->hostname);
-    g_free (s->user);
-    g_free (s->password);
+    g_free (s->type_label);
     g_free (s->remote_path);
     g_free (s);
 }
 
 /* -------------------------------------------------------------------------- */
-/* Управление конфигурацией                                                   */
+/* Управление конфигурацией плагина                                           */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -103,7 +111,9 @@ ensure_default_config_exists (const gchar *config_path)
         "# Раскрывать симлинки до реального пути целевого файла (true / false)\n"
         "resolve_symlinks = true\n\n"
         "# Список директорий для монтирования через запятую (оставьте пустым для отключения ограничения)\n"
-        "remote_dirs = /mnt/Remote\n";
+        "remote_dirs = /mnt/Remote\n\n"
+        "# Эмблема для смонтированных папок (globe, web, shared, synchronizing, default, favorite, system)\n"
+        "emblem = globe\n";
 
     g_file_set_contents (config_path, default_content, -1, NULL);
 }
@@ -171,33 +181,21 @@ app_config_load (void)
             g_free (rd);
             config->remote_dirs = g_strsplit ("/mnt/Remote", ",", -1);
         }
+
+        gchar *emb = g_key_file_get_string (keyfile, "General", "emblem", NULL);
+        if (emb && strlen (g_strstrip (emb)) > 0)
+        {
+            config->emblem = emb;
+        }
+        else
+        {
+            g_free (emb);
+            config->emblem = g_strdup ("globe");
+        }
     }
 
     return config;
 }
-
-/* -------------------------------------------------------------------------- */
-/* Объявление структуры GObject-плагина                                       */
-/* -------------------------------------------------------------------------- */
-
-typedef struct _CustomActions {
-    GObject parent_instance;
-} CustomActions;
-
-typedef struct _CustomActionsClass {
-    GObjectClass parent_class;
-} CustomActionsClass;
-
-static GType custom_actions_get_type (void);
-static void custom_actions_menu_provider_iface_init (NautilusMenuProviderInterface *iface);
-
-G_DEFINE_DYNAMIC_TYPE_EXTENDED (CustomActions, custom_actions, G_TYPE_OBJECT, 0,
-    G_IMPLEMENT_INTERFACE_DYNAMIC (NAUTILUS_TYPE_MENU_PROVIDER,
-                                   custom_actions_menu_provider_iface_init))
-
-static void custom_actions_class_init (CustomActionsClass *klass) {}
-static void custom_actions_init (CustomActions *self) {}
-static void custom_actions_class_finalize (CustomActionsClass *klass) {}
 
 /* -------------------------------------------------------------------------- */
 /* Вспомогательный хелпер: Запуск команд в терминале                           */
@@ -350,17 +348,16 @@ has_active_submounts (const gchar *path)
     return has_sub;
 }
 
+/**
+ * is_path_in_remote_dirs:
+ * Проверяет, является ли папка подпапкой внутри remote_dirs (например, /mnt/Remote/itcrus).
+ * Сама базовая папка (/mnt/Remote) исключается.
+ */
 static gboolean
-is_path_allowed_for_mount (const gchar *path, AppConfig *config)
+is_path_in_remote_dirs (const gchar *path, AppConfig *config)
 {
-    if (is_inside_active_mount (path))
-        return FALSE;
-
-    if (has_active_submounts (path))
-        return FALSE;
-
     if (!config->remote_dirs || config->remote_dirs[0] == NULL)
-        return TRUE;
+        return FALSE;
 
     for (int i = 0; config->remote_dirs[i] != NULL; i++)
     {
@@ -368,9 +365,11 @@ is_path_allowed_for_mount (const gchar *path, AppConfig *config)
         if (strlen (allowed_dir) == 0)
             continue;
 
+        /* Исключаем саму базовую папку-контейнер (например, /mnt/Remote) */
         if (g_strcmp0 (path, allowed_dir) == 0)
             return FALSE;
 
+        /* Разрешаем строго подпапки (например, /mnt/Remote/itcrus) */
         gsize allowed_len = strlen (allowed_dir);
         if (g_str_has_prefix (path, allowed_dir) && path[allowed_len] == '/')
         {
@@ -381,8 +380,20 @@ is_path_allowed_for_mount (const gchar *path, AppConfig *config)
     return FALSE;
 }
 
+static gboolean
+is_path_allowed_for_mount (const gchar *path, AppConfig *config)
+{
+    if (is_inside_active_mount (path))
+        return FALSE;
+
+    if (has_active_submounts (path))
+        return FALSE;
+
+    return is_path_in_remote_dirs (path, config);
+}
+
 /* -------------------------------------------------------------------------- */
-/* Парсинг ~/.ssh/config и ~/.ftp/config                                      */
+/* Парсинг ~/.ssh/config и ~/.config/rclone/rclone.conf                       */
 /* -------------------------------------------------------------------------- */
 
 static GList *
@@ -390,8 +401,9 @@ get_all_remote_servers (void)
 {
     GList *list = NULL;
     const gchar *home = g_get_home_dir ();
+    const gchar *config_dir = g_get_user_config_dir ();
 
-    /* 1. Парсим ~/.ssh/config */
+    /* 1. Парсим ~/.ssh/config (OpenSSH / SFTP) */
     g_autofree gchar *ssh_cfg = g_build_filename (home, ".ssh", "config", NULL);
     FILE *fp = fopen (ssh_cfg, "r");
     if (fp)
@@ -418,8 +430,9 @@ get_all_remote_servers (void)
                 if (strlen (host_name) > 0 && !strchr (host_name, '*') && !strchr (host_name, '?'))
                 {
                     cur = g_new0 (RemoteServer, 1);
-                    cur->name  = g_strdup (host_name);
-                    cur->proto = PROTO_SSH;
+                    cur->name       = g_strdup (host_name);
+                    cur->type_label = g_strdup ("SFTP");
+                    cur->is_rclone  = FALSE;
                     list = g_list_append (list, cur);
                 }
                 else
@@ -427,134 +440,114 @@ get_all_remote_servers (void)
                     cur = NULL;
                 }
             }
-            else if (cur != NULL)
-            {
-                if (g_ascii_strncasecmp (trimmed, "User ", 5) == 0)
-                    cur->user = g_strdup (g_strstrip (trimmed + 5));
-                else if (g_ascii_strncasecmp (trimmed, "HostName ", 9) == 0)
-                    cur->hostname = g_strdup (g_strstrip (trimmed + 9));
-            }
         }
         fclose (fp);
     }
 
-    /* 2. Парсим ~/.ftp/config */
-    g_autofree gchar *ftp_cfg = g_build_filename (home, ".ftp", "config", NULL);
-    fp = fopen (ftp_cfg, "r");
-    if (fp)
+    /* 2. Парсим ~/.config/rclone/rclone.conf (FTP, WebDAV, S3 и др.) */
+    g_autofree gchar *rclone_cfg = g_build_filename (config_dir, "rclone", "rclone.conf", NULL);
+    g_autoptr (GKeyFile) keyfile = g_key_file_new ();
+    if (g_key_file_load_from_file (keyfile, rclone_cfg, G_KEY_FILE_NONE, NULL))
     {
-        char line[1024];
-        RemoteServer *cur = NULL;
+        gsize num_groups = 0;
+        gchar **groups = g_key_file_get_groups (keyfile, &num_groups);
 
-        while (fgets (line, sizeof (line), fp))
+        for (gsize i = 0; i < num_groups; i++)
         {
-            gchar *trimmed = g_strstrip (line);
-            if (trimmed[0] == '#')
+            gchar *group_name = groups[i];
+            gchar *type = g_key_file_get_string (keyfile, group_name, "type", NULL);
+
+            RemoteServer *cur = g_new0 (RemoteServer, 1);
+            cur->name      = g_strdup (group_name);
+            cur->is_rclone = TRUE;
+
+            if (type && strlen (g_strstrip (type)) > 0)
             {
-                if (cur != NULL && g_ascii_strncasecmp (trimmed, "# RemotePath:", 13) == 0)
-                {
-                    cur->remote_path = g_strdup (g_strstrip (trimmed + 13));
-                }
-                continue;
+                cur->type_label = g_ascii_strup (type, -1);
+                g_free (type);
+            }
+            else
+            {
+                cur->type_label = g_strdup ("RCLONE");
             }
 
-            if (g_ascii_strncasecmp (trimmed, "Host ", 5) == 0)
-            {
-                gchar *host_name = g_strstrip (trimmed + 5);
-                if (strlen (host_name) > 0)
-                {
-                    cur = g_new0 (RemoteServer, 1);
-                    cur->name  = g_strdup (host_name);
-                    cur->port  = 21;
-                    cur->proto = PROTO_FTP;
-                    list = g_list_append (list, cur);
-                }
-            }
-            else if (cur != NULL)
-            {
-                if (g_ascii_strncasecmp (trimmed, "HostName ", 9) == 0)
-                    cur->hostname = g_strdup (g_strstrip (trimmed + 9));
-                else if (g_ascii_strncasecmp (trimmed, "User ", 5) == 0)
-                    cur->user = g_strdup (g_strstrip (trimmed + 5));
-                else if (g_ascii_strncasecmp (trimmed, "Password ", 9) == 0)
-                    cur->password = g_strdup (g_strstrip (trimmed + 9));
-                else if (g_ascii_strncasecmp (trimmed, "Port ", 5) == 0)
-                    cur->port = atoi (g_strstrip (trimmed + 5));
-            }
+            list = g_list_append (list, cur);
         }
-        fclose (fp);
+
+        g_strfreev (groups);
     }
 
     return list;
 }
 
+/**
+ * reload_nautilus_views:
+ * Программно вызывает системное действие F5 (slot.reload) в окнах Nautilus.
+ */
+static void
+reload_nautilus_views (void)
+{
+    GApplication *app = g_application_get_default ();
+    if (app && GTK_IS_APPLICATION (app))
+    {
+        GList *windows = gtk_application_get_windows (GTK_APPLICATION (app));
+        for (GList *w = windows; w != NULL; w = w->next)
+        {
+            if (GTK_IS_WINDOW (w->data))
+            {
+                /* В Nautilus GTK4 действие F5 называется 'slot.reload' */
+                gtk_widget_activate_action (GTK_WIDGET (w->data), "slot.reload", NULL);
+
+                /* Также дёргаем активный фокусный виджет (вкладку со списком файлов) */
+                GtkWidget *focus = gtk_window_get_focus (GTK_WINDOW (w->data));
+                if (focus)
+                {
+                    gtk_widget_activate_action (focus, "slot.reload", NULL);
+                }
+            }
+        }
+    }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Асинхронное монтирование                                                   */
 /* -------------------------------------------------------------------------- */
-/**
- * mount_ftp_with_rclone:
- * Запускает монтирование FTP через rclone с шифрованием пароля на лету.
- */
+typedef struct {
+    gchar *target_path;
+} MountFinishData;
+
 static void
-mount_ftp_with_rclone (const gchar *host,
-                       gint         port,
-                       const gchar *user,
-                       const gchar *pass,
-                       const gchar *remote_path,
-                       const gchar *target_path)
+on_mount_finished (GObject *source_object, GAsyncResult *res, gpointer user_data)
 {
-    const gchar *subpath = (remote_path && strlen (remote_path) > 0) ? remote_path : "";
-    if (subpath[0] == '/')
-        subpath++;
-
-    g_autofree gchar *remote_spec = (strlen (subpath) > 0)
-                                    ? g_strdup_printf (":ftp:%s", subpath)
-                                    : g_strdup (":ftp:");
-
-    g_autofree gchar *cmd = g_strdup_printf (
-        "rclone mount '%s' '%s' "
-        "--config=\"\" "
-        "--ftp-host='%s' "
-        "--ftp-port=%d "
-        "--ftp-user='%s' "
-        "--ftp-pass=\"$(rclone obscure '%s')\" "
-        "--vfs-cache-mode writes "
-        "--daemon",
-        remote_spec,
-        target_path,
-        host,
-        port,
-        user ? user : "anonymous",
-        pass ? pass : ""
-    );
-
-    g_spawn_command_line_async (cmd, NULL);
-}
-
-/* Колбэк после ввода пароля в Zenity (если пароль не был указан в конфиге) */
-static void
-on_ftp_password_done (GObject *source_object, GAsyncResult *res, gpointer user_data)
-{
-    FtpMountData *data = (FtpMountData *) user_data;
+    MountFinishData *data = (MountFinishData *) user_data;
     GSubprocess *proc = G_SUBPROCESS (source_object);
-    g_autofree gchar *stdout_buf = NULL;
     g_autoptr (GError) err = NULL;
 
-    g_subprocess_communicate_utf8_finish (proc, res, &stdout_buf, NULL, &err);
+    g_subprocess_wait_finish (proc, res, &err);
 
-    if (!err && g_subprocess_get_successful (proc) && stdout_buf)
+    /* Если процесс монтирования завершился успешно */
+    if (!err && g_subprocess_get_successful (proc))
     {
-        gchar *clean_pass = g_strstrip (stdout_buf);
-        mount_ftp_with_rclone (data->host, data->port, data->user, clean_pass, data->remote_path, data->target_path);
+        /* 1. Устанавливаем системную эмблему через GIO metadata (по умолчанию 'globe') */
+        AppConfig *config = app_config_load ();
+        const gchar *emblem_name = (config->emblem && strlen (config->emblem) > 0) ? config->emblem : "globe";
+        const gchar *emblems[] = { emblem_name, NULL };
+
+        g_autoptr (GFile) target_gfile = g_file_new_for_path (data->target_path);
+        g_file_set_attribute (target_gfile, "metadata::emblems",
+                              G_FILE_ATTRIBUTE_TYPE_STRINGV,
+                              (gpointer) emblems,
+                              G_FILE_QUERY_INFO_NONE,
+                              NULL, NULL);
+        app_config_free (config);
+
+        /* 2. Обновляем вид Nautilus только ПОСЛЕ того, как диск реально готов */
+        reload_nautilus_views ();
     }
 
     g_free (data->target_path);
-    g_free (data->host);
-    g_free (data->user);
-    g_free (data->remote_path);
     g_free (data);
 }
-
 static void
 on_zenity_dialog_finished (GObject *source_object, GAsyncResult *res, gpointer user_data)
 {
@@ -575,7 +568,7 @@ on_zenity_dialog_finished (GObject *source_object, GAsyncResult *res, gpointer u
 
         if (parts[0] != NULL && parts[1] != NULL)
         {
-            ServerProto selected_proto = (g_strcmp0 (parts[0], "ftp") == 0) ? PROTO_FTP : PROTO_SSH;
+            gboolean is_rclone = (g_strcmp0 (parts[0], "rclone") == 0);
             const gchar *selected_name = parts[1];
 
             GList *servers = get_all_remote_servers ();
@@ -584,7 +577,7 @@ on_zenity_dialog_finished (GObject *source_object, GAsyncResult *res, gpointer u
             for (GList *l = servers; l != NULL; l = l->next)
             {
                 RemoteServer *s = (RemoteServer *) l->data;
-                if (s->proto == selected_proto && g_strcmp0 (s->name, selected_name) == 0)
+                if (s->is_rclone == is_rclone && g_strcmp0 (s->name, selected_name) == 0)
                 {
                     target_server = s;
                     break;
@@ -593,61 +586,64 @@ on_zenity_dialog_finished (GObject *source_object, GAsyncResult *res, gpointer u
 
             if (target_server)
             {
-                if (target_server->proto == PROTO_SSH)
+                GSubprocess *mount_proc = NULL;
+                g_autoptr (GError) spawn_err = NULL;
+
+                /* 1. Монтирование через Rclone (FTP, WebDAV, S3 и т.д.) */
+                if (target_server->is_rclone)
                 {
-                    /* SFTP: всегда корень '/' по умолчанию, если не задан # RemotePath */
+                    g_autofree gchar *remote_spec = NULL;
+                    if (target_server->remote_path && strlen (target_server->remote_path) > 0)
+                    {
+                        const gchar *subpath = target_server->remote_path;
+                        if (subpath[0] == '/')
+                            subpath++;
+                        remote_spec = g_strdup_printf ("%s:%s", target_server->name, subpath);
+                    }
+                    else
+                    {
+                        remote_spec = g_strdup_printf ("%s:", target_server->name);
+                    }
+
+                    mount_proc = g_subprocess_new (
+                        G_SUBPROCESS_FLAGS_NONE,
+                        &spawn_err,
+                        "rclone", "mount", remote_spec, data->target_path,
+                        "--vfs-cache-mode", "writes",
+                        "--daemon",
+                        NULL
+                    );
+                }
+                /* 2. Монтирование через SSHFS (OpenSSH / SFTP) */
+                else
+                {
                     g_autofree gchar *remote_spec = NULL;
                     if (target_server->remote_path)
                         remote_spec = g_strdup_printf ("%s:%s", target_server->name, target_server->remote_path);
                     else
                         remote_spec = g_strdup_printf ("%s:/", target_server->name);
 
-                    g_autofree gchar *cmd = g_strdup_printf (
-                        "env SSH_ASKPASS_REQUIRE=force SSH_ASKPASS=zenity-askpass-wrapper "
-                        "sshfs '%s' '%s' -o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,follow_symlinks,StrictHostKeyChecking=accept-new",
-                        remote_spec, data->target_path
+                    g_autoptr (GSubprocessLauncher) launcher = g_subprocess_launcher_new (G_SUBPROCESS_FLAGS_NONE);
+                    g_subprocess_launcher_setenv (launcher, "SSH_ASKPASS_REQUIRE", "force", TRUE);
+                    g_subprocess_launcher_setenv (launcher, "SSH_ASKPASS", "zenity-askpass-wrapper", TRUE);
+
+                    mount_proc = g_subprocess_launcher_spawn (
+                        launcher,
+                        &spawn_err,
+                        "sshfs", remote_spec, data->target_path,
+                        "-o", "reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,follow_symlinks,StrictHostKeyChecking=accept-new",
+                        NULL
                     );
-                    g_spawn_command_line_async (cmd, NULL);
                 }
-                else if (target_server->proto == PROTO_FTP)
+
+                /* Асинхронно ожидаем готовности точки монтирования */
+                if (mount_proc)
                 {
-                    const gchar *user = target_server->user ? target_server->user : "anonymous";
-                    const gchar *host = target_server->hostname ? target_server->hostname : target_server->name;
-                    gint port = target_server->port > 0 ? target_server->port : 21;
+                    MountFinishData *mf_data = g_new0 (MountFinishData, 1);
+                    mf_data->target_path = g_strdup (data->target_path);
 
-                    /* Если пароль сохранён в ~/.ftp/config -> монтируем сразу без диалогов */
-                    if (target_server->password && strlen (target_server->password) > 0)
-                    {
-                        mount_ftp_with_rclone (host, port, user, target_server->password, target_server->remote_path, data->target_path);
-                    }
-                    /* Иначе запрашиваем пароль в Zenity */
-                    else
-                    {
-                        g_autofree gchar *prompt_text = g_strdup_printf ("Введите пароль для %s@%s:", user, host);
-                        const gchar *pass_argv[] = {
-                            "zenity", "--password",
-                            "--title=FTP Аутентификация",
-                            "--text", prompt_text,
-                            NULL
-                        };
-
-                        g_autoptr (GSubprocessLauncher) pass_launcher = g_subprocess_launcher_new (
-                            G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE
-                        );
-                        GSubprocess *pass_proc = g_subprocess_launcher_spawnv (pass_launcher, pass_argv, NULL);
-
-                        if (pass_proc)
-                        {
-                            FtpMountData *ftp_data = g_new0 (FtpMountData, 1);
-                            ftp_data->target_path = g_strdup (data->target_path);
-                            ftp_data->host = g_strdup (host);
-                            ftp_data->user = g_strdup (user);
-                            ftp_data->remote_path = g_strdup (target_server->remote_path);
-                            ftp_data->port = port;
-
-                            g_subprocess_communicate_utf8_async (pass_proc, NULL, NULL, on_ftp_password_done, ftp_data);
-                        }
-                    }
+                    g_subprocess_wait_async (mount_proc, NULL, on_mount_finished, mf_data);
+                    g_object_unref (mount_proc);
                 }
             }
 
@@ -679,13 +675,14 @@ on_mount_dialog_activated (NautilusMenuItem *item, gpointer user_data)
             "-u", "normal",
             "-i", "dialog-information",
             "Удалённые серверы",
-            "Не найдено серверов в ~/.ssh/config или ~/.ftp/config",
+            "Не найдено серверов в ~/.ssh/config или ~/.config/rclone/rclone.conf",
             NULL
         };
         g_spawn_async (NULL, (gchar **) notify_argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
         return;
     }
 
+    /* Таблица из 2-х колонок с скрытым ID: ID | Сервер | Протокол */
     GPtrArray *argv_array = g_ptr_array_new ();
     g_ptr_array_add (argv_array, "zenity");
     g_ptr_array_add (argv_array, "--list");
@@ -701,11 +698,11 @@ on_mount_dialog_activated (NautilusMenuItem *item, gpointer user_data)
     for (GList *l = servers; l != NULL; l = l->next)
     {
         RemoteServer *s = (RemoteServer *) l->data;
-        gchar *uid = g_strdup_printf ("%s:%s", s->proto == PROTO_FTP ? "ftp" : "sftp", s->name);
+        gchar *uid = g_strdup_printf ("%s:%s", s->is_rclone ? "rclone" : "sftp", s->name);
 
         g_ptr_array_add (argv_array, uid);
         g_ptr_array_add (argv_array, s->name);
-        g_ptr_array_add (argv_array, s->proto == PROTO_FTP ? "FTP" : "SFTP");
+        g_ptr_array_add (argv_array, s->type_label);
     }
     g_ptr_array_add (argv_array, NULL);
 
@@ -775,6 +772,19 @@ on_unmount_ssh_activated (NautilusMenuItem *item, gpointer user_data)
         };
         g_spawn_async (NULL, (gchar **) notify_argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
     }
+    else
+    {
+        /* Снимаем системную эмблему через GIO metadata */
+        g_autoptr (GFile) unmounted_gfile = g_file_new_for_path (path);
+        g_file_set_attribute (unmounted_gfile, "metadata::emblems",
+                              G_FILE_ATTRIBUTE_TYPE_INVALID,
+                              NULL,
+                              G_FILE_QUERY_INFO_NONE,
+                              NULL, NULL);
+
+        /* Принудительно заставляем Nautilus скрыть иконку на экране */
+        reload_nautilus_views ();
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -806,6 +816,7 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
 
         g_autofree gchar *target_path = NULL;
 
+        /* Резолв симлинка */
         if (config->resolve_symlinks && g_file_test (path, G_FILE_TEST_IS_SYMLINK))
         {
             char *resolved = realpath (path, NULL);
@@ -848,6 +859,7 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
             g_string_append_c (text, '\n');
         first = FALSE;
 
+        /* Сокращение $HOME до ~ */
         if (config->shorten_home && home && g_strcmp0 (final_path, home) == 0)
         {
             g_string_append (text, "~");
@@ -1020,7 +1032,7 @@ custom_actions_get_file_items (NautilusMenuProvider *provider, GList *files)
 
         items = g_list_append (items, root_item);
 
-        /* --- Пункт 4: Монтирование / Размонтирование SSHFS/FTP (ТОЛЬКО для папок) --- */
+        /* --- Пункт 4: Монтирование / Размонтирование SSHFS/Rclone (ТОЛЬКО для папок) --- */
         if (is_dir && target_path)
         {
             if (is_path_mounted (target_path))
@@ -1046,7 +1058,7 @@ custom_actions_get_file_items (NautilusMenuProvider *provider, GList *files)
                 NautilusMenuItem *mount_item = nautilus_menu_item_new (
                     mount_id,
                     "Примонтировать сервер...",
-                    "Выбрать сервер из ~/.ssh/config или ~/.ftp/config и примонтировать",
+                    "Выбрать сервер из ~/.ssh/config или ~/.config/rclone/rclone.conf и примонтировать",
                     "network-server-symbolic"
                 );
 
