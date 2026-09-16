@@ -25,6 +25,7 @@ rm -f "$EXTENSIONS_DIR"/libnautilus-tweaks-*.so
 MODULES=(
     "actions:nautilus-tweaks-actions.c:Кастомные действия (Пути, VS Code, Root)"
     "mount:nautilus-tweaks-mount.c:Монтирование серверов (SFTP, FTP, Rclone)"
+    "permissions:nautilus-tweaks-permissions.c:Управление правами (chmod / chown)"
 )
 
 SELECTED=()

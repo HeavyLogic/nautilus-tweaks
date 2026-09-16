@@ -56,29 +56,30 @@ Host ruweb
 
 ## Как компилировать
 
-*Установить*
+**Установить**
 ```bash
 sudo make install
 ```
 
-*Удалить*
+**Удалить**
 ```bash
 sudo make uninstall
 ```
 
-Nautilus должен закрыться сам в процессе установки
+*Nautilus должен закрыться сам в процессе установки*
 
 ## Зависимости
 
 ### Для сборки:
-- `gcc`
-- `pkgconf`
-- `libnautilus-extension-4` (пакет `libnautilus-extension`)
-- `gtk4`
+- Компилятор C (`gcc` или `clang`)
+- `pkgconf` (или `pkg-config`)
+- Заголовочные файлы Nautilus (`libnautilus-extension-4`):
+  - **Arch Linux:** `sudo pacman -S base-devel nautilus`
+  - **Ubuntu / Debian:** `sudo apt install build-essential pkgconf libnautilus-extension-dev`
+  - **Fedora:** `sudo dnf install gcc pkgconf nautilus-devel`
 
 ### Для работы (Runtime):
-- `zenity` — графическое меню выбора серверов и запрос паролей
-- `sshfs` — монтирование SFTP/SSH серверов
-- `rclone` — быстрое монтирование FTP/WebDAV/облачных хранилищ с VFS-кэшированием
-- `fuse3` — системная утилита размонтирования (`fusermount3` / `fusermount`)
-- `openbsd-netcat` — проброс соединений через `ProxyCommand` в обход VPN (опционально)
+- **Для модуля монтирования (`mount`):**
+  - `zenity` — графический диалог выбора сервера
+  - `sshfs` — для подключения SFTP/SSH
+  - `rclone` — для подключения FTP, WebDAV, S3 и др.
