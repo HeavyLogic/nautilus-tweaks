@@ -13,6 +13,10 @@ typedef struct {
     /* Настройки для монтирования */
     gchar   **remote_dirs;
     gchar    *emblem;
+
+    /* Настройки для прав доступа */
+    gchar   **extra_users;
+    gchar   **extra_groups;
 } TweaksConfig;
 
 TweaksConfig *tweaks_config_load (void);
