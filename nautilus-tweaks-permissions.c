@@ -15,6 +15,34 @@ static guint g_permissions_action_counter = 0;
 static GtkWidget *g_active_dialog_window = NULL;
 
 /* -------------------------------------------------------------------------- */
+/* Типы файловых систем и данные монтирования                                 */
+/* -------------------------------------------------------------------------- */
+
+typedef enum {
+    FS_MODE_LOCAL,
+    FS_MODE_SSHFS,
+    FS_MODE_RCLONE
+} FsMode;
+
+typedef struct {
+    FsMode mode;
+    gchar *ssh_host;
+    gchar *remote_base_path;
+    gchar *mount_point;
+} MountInfo;
+
+static void
+mount_info_free (MountInfo *info)
+{
+    if (!info)
+        return;
+    g_free (info->ssh_host);
+    g_free (info->remote_base_path);
+    g_free (info->mount_point);
+    g_free (info);
+}
+
+/* -------------------------------------------------------------------------- */
 /* Логирование в ~/.config/nautilus-tweaks/debug.log                          */
 /* -------------------------------------------------------------------------- */
 
@@ -45,26 +73,121 @@ log_debug (const gchar *format, ...)
 }
 
 /* -------------------------------------------------------------------------- */
+/* Определение режима ФС через /proc/mounts                                   */
+/* -------------------------------------------------------------------------- */
+
+static MountInfo *
+get_mount_info_for_path (const gchar *path)
+{
+    MountInfo *info = g_new0 (MountInfo, 1);
+    info->mode = FS_MODE_LOCAL;
+
+    FILE *fp = fopen ("/proc/mounts", "r");
+    if (!fp)
+        return info;
+
+    char line[2048];
+    gsize best_match_len = 0;
+
+    while (fgets (line, sizeof (line), fp))
+    {
+        char dev[512], mnt[1024], fstype[64];
+        if (sscanf (line, "%511s %1023s %63s", dev, mnt, fstype) >= 3)
+        {
+            gsize mnt_len = strlen (mnt);
+            if (g_str_has_prefix (path, mnt) && (path[mnt_len] == '/' || path[mnt_len] == '\0' || mnt_len == 1))
+            {
+                if (mnt_len > best_match_len)
+                {
+                    best_match_len = mnt_len;
+                    g_free (info->mount_point);
+                    info->mount_point = g_strdup (mnt);
+
+                    if (g_str_has_prefix (fstype, "fuse.rclone") || g_strcmp0 (fstype, "rclone") == 0)
+                    {
+                        info->mode = FS_MODE_RCLONE;
+                    }
+                    else if (g_str_has_prefix (fstype, "fuse.sshfs") || g_strcmp0 (fstype, "sshfs") == 0)
+                    {
+                        info->mode = FS_MODE_SSHFS;
+                        g_free (info->ssh_host);
+                        g_free (info->remote_base_path);
+
+                        char *colon = strchr (dev, ':');
+                        if (colon)
+                        {
+                            info->ssh_host = g_strndup (dev, colon - dev);
+                            info->remote_base_path = g_strdup (colon + 1);
+                            if (strlen (info->remote_base_path) == 0)
+                            {
+                                g_free (info->remote_base_path);
+                                info->remote_base_path = g_strdup ("/");
+                            }
+                        }
+                        else
+                        {
+                            info->ssh_host = g_strdup (dev);
+                            info->remote_base_path = g_strdup ("/");
+                        }
+                    }
+                    else
+                    {
+                        info->mode = FS_MODE_LOCAL;
+                    }
+                }
+            }
+        }
+    }
+    fclose (fp);
+    return info;
+}
+
+static gchar *
+translate_to_remote_path (const gchar *local_path, MountInfo *info)
+{
+    if (info->mode != FS_MODE_SSHFS || !info->mount_point)
+        return g_strdup (local_path);
+
+    gsize mnt_len = strlen (info->mount_point);
+    const gchar *subpath = local_path + mnt_len;
+    while (*subpath == '/')
+        subpath++;
+
+    if (g_strcmp0 (info->remote_base_path, "/") == 0 || strlen (info->remote_base_path) == 0)
+        return g_strdup_printf ("/%s", subpath);
+
+    return g_build_filename (info->remote_base_path, subpath, NULL);
+}
+
+/* -------------------------------------------------------------------------- */
 /* Структура данных виджетов                                                  */
 /* -------------------------------------------------------------------------- */
 
 typedef struct {
     GtkWidget *window;
     GList     *target_paths;
+    MountInfo *mount_info;
 
-    /* Переключаемый блок Owner */
-    GtkWidget      *stack_owner;
-    GtkWidget      *combo_owner;
-    GtkWidget      *entry_owner;
-    GtkWidget      *toggle_owner;
-    GtkStringList  *owners_model;
+    /* Стек переключения (Загрузка <-> Форма) */
+    GtkWidget *stack_pages;
+    GtkWidget *spinner;
+    GtkWidget *lbl_loading;
 
-    /* Переключаемый блок Group */
-    GtkWidget      *stack_group;
-    GtkWidget      *combo_group;
-    GtkWidget      *entry_group;
-    GtkWidget      *toggle_group;
-    GtkStringList  *groups_model;
+    GtkWidget *lbl_target_path;
+
+    /* Выпадающие списки */
+    GtkWidget     *combo_owner_compact;
+    GtkWidget     *combo_owner_full;
+    GtkStringList *owners_compact_model;
+    GtkStringList *owners_full_model;
+
+    GtkWidget     *combo_group_compact;
+    GtkWidget     *combo_group_full;
+    GtkStringList *groups_compact_model;
+    GtkStringList *groups_full_model;
+
+    /* Чекбокс показа всех пользователей/групп */
+    GtkWidget *chk_show_all;
 
     /* Чекбоксы прав (3x4) */
     GtkWidget *chk_u_r;
@@ -233,10 +356,11 @@ on_octal_entry_changed (GtkEditable *editable, gpointer user_data)
 /* -------------------------------------------------------------------------- */
 
 static gboolean
-is_whitelisted_system_user (const gchar *name)
+is_whitelisted_service_name (const gchar *name)
 {
     const gchar *whitelist[] = {
-        "http", "www-data", "nginx", "ftp", "git", "phpmyadmin", "nobody", NULL
+        "www-data", "http", "nginx", "phpmyadmin", "mysql", "redis",
+        "ftp", "git", "docker", "wheel", "sudo", "users", "storage", "nobody", "nogroup", NULL
     };
     for (int i = 0; whitelist[i] != NULL; i++)
     {
@@ -246,165 +370,46 @@ is_whitelisted_system_user (const gchar *name)
     return FALSE;
 }
 
-static gboolean
-is_whitelisted_system_group (const gchar *name)
+static GHashTable *
+get_valid_shells_set (const gchar *shells_raw)
 {
-    const gchar *whitelist[] = {
-        "wheel", "sudo", "users", "storage", "http", "www-data", 
-        "nginx", "docker", "ftp", "phpmyadmin", "nobody", NULL
-    };
-    for (int i = 0; whitelist[i] != NULL; i++)
+    GHashTable *table = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+
+    if (shells_raw && strlen (shells_raw) > 0)
     {
-        if (g_strcmp0 (name, whitelist[i]) == 0)
-            return TRUE;
-    }
-    return FALSE;
-}
-
-static GtkStringList *
-build_users_string_list (TweaksConfig *config)
-{
-    GtkStringList *model = gtk_string_list_new (NULL);
-    GHashTable *seen = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
-
-    #define ADD_USER(name, uid_str) do { \
-        if (name && strlen(name) > 0 && !g_hash_table_contains (seen, name)) { \
-            g_hash_table_add (seen, g_strdup (name)); \
-            g_autofree gchar *entry_str = g_strdup_printf ("%s [%s]", name, uid_str); \
-            gtk_string_list_append (model, entry_str); \
-        } \
-    } while (0)
-
-    ADD_USER ("root", "0");
-
-    const gchar *cur_user = g_get_user_name ();
-    g_autofree gchar *cur_uid_str = g_strdup_printf ("%u", (guint) getuid ());
-    ADD_USER (cur_user, cur_uid_str);
-
-    struct passwd *pw;
-    setpwent ();
-    while ((pw = getpwent ()) != NULL)
-    {
-        gboolean is_real_user = (pw->pw_uid >= 1000 && pw->pw_uid != 65534);
-        gboolean is_server_acc = is_whitelisted_system_user (pw->pw_name);
-
-        if (is_real_user || is_server_acc)
+        gchar **lines = g_strsplit (shells_raw, "\n", -1);
+        for (int i = 0; lines[i] != NULL; i++)
         {
-            g_autofree gchar *u_str = g_strdup_printf ("%u", (guint) pw->pw_uid);
-            ADD_USER (pw->pw_name, u_str);
+            gchar *trimmed = g_strstrip (lines[i]);
+            if (trimmed[0] != '#' && strlen (trimmed) > 0)
+                g_hash_table_add (table, g_strdup (trimmed));
         }
+        g_strfreev (lines);
     }
-    endpwent ();
-
-    if (config && config->extra_users)
+    else
     {
-        for (int i = 0; config->extra_users[i] != NULL; i++)
+        FILE *fp = fopen ("/etc/shells", "r");
+        if (fp)
         {
-            const gchar *extra = config->extra_users[i];
-            if (strlen (extra) > 0)
+            char line[256];
+            while (fgets (line, sizeof (line), fp))
             {
-                struct passwd *p = getpwnam (extra);
-                if (p)
-                {
-                    g_autofree gchar *u_str = g_strdup_printf ("%u", (guint) p->pw_uid);
-                    ADD_USER (p->pw_name, u_str);
-                }
-                else
-                {
-                    ADD_USER (extra, "custom");
-                }
+                gchar *trimmed = g_strstrip (line);
+                if (trimmed[0] != '#' && strlen (trimmed) > 0)
+                    g_hash_table_add (table, g_strdup (trimmed));
             }
+            fclose (fp);
         }
     }
 
-    #undef ADD_USER
-    g_hash_table_destroy (seen);
-    return model;
-}
+    g_hash_table_add (table, g_strdup ("/bin/bash"));
+    g_hash_table_add (table, g_strdup ("/usr/bin/bash"));
+    g_hash_table_add (table, g_strdup ("/bin/sh"));
+    g_hash_table_add (table, g_strdup ("/usr/bin/sh"));
+    g_hash_table_add (table, g_strdup ("/bin/zsh"));
+    g_hash_table_add (table, g_strdup ("/usr/bin/zsh"));
 
-static GtkStringList *
-build_groups_string_list (TweaksConfig *config)
-{
-    GtkStringList *model = gtk_string_list_new (NULL);
-    GHashTable *seen = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
-
-    #define ADD_GROUP(name, gid_str) do { \
-        if (name && strlen(name) > 0 && !g_hash_table_contains (seen, name)) { \
-            g_hash_table_add (seen, g_strdup (name)); \
-            g_autofree gchar *entry_str = g_strdup_printf ("%s [%s]", name, gid_str); \
-            gtk_string_list_append (model, entry_str); \
-        } \
-    } while (0)
-
-    ADD_GROUP ("root", "0");
-
-    gid_t cur_gid = getgid ();
-    struct group *cur_gr = getgrgid (cur_gid);
-    if (cur_gr)
-    {
-        g_autofree gchar *g_str = g_strdup_printf ("%u", (guint) cur_gid);
-        ADD_GROUP (cur_gr->gr_name, g_str);
-    }
-
-    int ngroups = 0;
-    getgrouplist (g_get_user_name (), cur_gid, NULL, &ngroups);
-    if (ngroups > 0)
-    {
-        gid_t *groups = g_new0 (gid_t, ngroups);
-        if (getgrouplist (g_get_user_name (), cur_gid, groups, &ngroups) != -1)
-        {
-            for (int i = 0; i < ngroups; i++)
-            {
-                struct group *g = getgrgid (groups[i]);
-                if (g)
-                {
-                    g_autofree gchar *g_str = g_strdup_printf ("%u", (guint) g->gr_gid);
-                    ADD_GROUP (g->gr_name, g_str);
-                }
-            }
-        }
-        g_free (groups);
-    }
-
-    struct group *gr;
-    setgrent ();
-    while ((gr = getgrent ()) != NULL)
-    {
-        gboolean is_user_group = (gr->gr_gid >= 1000 && gr->gr_gid != 65534);
-        gboolean is_server_group = is_whitelisted_system_group (gr->gr_name);
-
-        if (is_user_group || is_server_group)
-        {
-            g_autofree gchar *g_str = g_strdup_printf ("%u", (guint) gr->gr_gid);
-            ADD_GROUP (gr->gr_name, g_str);
-        }
-    }
-    endgrent ();
-
-    if (config && config->extra_groups)
-    {
-        for (int i = 0; config->extra_groups[i] != NULL; i++)
-        {
-            const gchar *extra = config->extra_groups[i];
-            if (strlen (extra) > 0)
-            {
-                struct group *g = getgrnam (extra);
-                if (g)
-                {
-                    g_autofree gchar *g_str = g_strdup_printf ("%u", (guint) g->gr_gid);
-                    ADD_GROUP (g->gr_name, g_str);
-                }
-                else
-                {
-                    ADD_GROUP (extra, "custom");
-                }
-            }
-        }
-    }
-
-    #undef ADD_GROUP
-    g_hash_table_destroy (seen);
-    return model;
+    return table;
 }
 
 static gchar *
@@ -422,59 +427,81 @@ clean_entry_value (const gchar *input_str)
     return trimmed;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Обработчики переключения режима (Список <-> Ручной ввод)                   */
-/* -------------------------------------------------------------------------- */
-
 static void
-on_owner_toggle_toggled (GtkToggleButton *btn, gpointer user_data)
+select_in_string_list (GtkWidget *dropdown, GtkStringList *model, const gchar *target_str)
 {
-    PermissionsDialogWidgets *w = (PermissionsDialogWidgets *) user_data;
-    gboolean is_manual = gtk_toggle_button_get_active (btn);
+    if (!target_str || !model)
+        return;
 
-    if (is_manual)
+    g_autofree gchar *target_name = clean_entry_value (target_str);
+    guint n = g_list_model_get_n_items (G_LIST_MODEL (model));
+    for (guint i = 0; i < n; i++)
     {
-        /* При переключении на ручной ввод подставляем текущий выбранный логин */
-        guint idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (w->combo_owner));
-        const gchar *item_str = gtk_string_list_get_string (w->owners_model, idx);
-        g_autofree gchar *name = clean_entry_value (item_str);
-        gtk_editable_set_text (GTK_EDITABLE (w->entry_owner), name);
-
-        gtk_stack_set_visible_child_name (GTK_STACK (w->stack_owner), "entry");
-        gtk_widget_set_tooltip_text (GTK_WIDGET (btn), "Выбрать из списка");
-    }
-    else
-    {
-        gtk_stack_set_visible_child_name (GTK_STACK (w->stack_owner), "dropdown");
-        gtk_widget_set_tooltip_text (GTK_WIDGET (btn), "Ввести вручную");
-    }
-}
-
-static void
-on_group_toggle_toggled (GtkToggleButton *btn, gpointer user_data)
-{
-    PermissionsDialogWidgets *w = (PermissionsDialogWidgets *) user_data;
-    gboolean is_manual = gtk_toggle_button_get_active (btn);
-
-    if (is_manual)
-    {
-        guint idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (w->combo_group));
-        const gchar *item_str = gtk_string_list_get_string (w->groups_model, idx);
-        g_autofree gchar *name = clean_entry_value (item_str);
-        gtk_editable_set_text (GTK_EDITABLE (w->entry_group), name);
-
-        gtk_stack_set_visible_child_name (GTK_STACK (w->stack_group), "entry");
-        gtk_widget_set_tooltip_text (GTK_WIDGET (btn), "Выбрать из списка");
-    }
-    else
-    {
-        gtk_stack_set_visible_child_name (GTK_STACK (w->stack_group), "dropdown");
-        gtk_widget_set_tooltip_text (GTK_WIDGET (btn), "Ввести вручную");
+        const gchar *s = gtk_string_list_get_string (model, i);
+        g_autofree gchar *name = clean_entry_value (s);
+        if (g_strcmp0 (name, target_name) == 0)
+        {
+            gtk_drop_down_set_selected (GTK_DROP_DOWN (dropdown), i);
+            return;
+        }
     }
 }
 
 /* -------------------------------------------------------------------------- */
-/* Асинхронное выполнение команды                                             */
+/* Создание GtkDropDown со встроенным поиском (GtkPropertyExpression)          */
+/* -------------------------------------------------------------------------- */
+
+static GtkWidget *
+create_searchable_dropdown (GtkStringList *model)
+{
+    GtkExpression *expr = gtk_property_expression_new (GTK_TYPE_STRING_OBJECT, NULL, "string");
+    GtkWidget *dropdown = gtk_drop_down_new (G_LIST_MODEL (model), expr);
+    gtk_drop_down_set_enable_search (GTK_DROP_DOWN (dropdown), TRUE);
+    gtk_widget_set_hexpand (dropdown, TRUE);
+    return dropdown;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Переключение между Компактным и Полным списком (без падений)               */
+/* -------------------------------------------------------------------------- */
+
+static void
+on_show_all_toggled (GtkCheckButton *btn, gpointer user_data)
+{
+    PermissionsDialogWidgets *w = (PermissionsDialogWidgets *) user_data;
+    gboolean show_all = gtk_check_button_get_active (btn);
+
+    if (show_all)
+    {
+        /* Синхронизируем выбор из compact в full */
+        guint u_idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (w->combo_owner_compact));
+        const gchar *u_str = gtk_string_list_get_string (w->owners_compact_model, u_idx);
+        select_in_string_list (w->combo_owner_full, w->owners_full_model, u_str);
+
+        guint g_idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (w->combo_group_compact));
+        const gchar *g_str = gtk_string_list_get_string (w->groups_compact_model, g_idx);
+        select_in_string_list (w->combo_group_full, w->groups_full_model, g_str);
+    }
+    else
+    {
+        /* Синхронизируем выбор из full в compact */
+        guint u_idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (w->combo_owner_full));
+        const gchar *u_str = gtk_string_list_get_string (w->owners_full_model, u_idx);
+        select_in_string_list (w->combo_owner_compact, w->owners_compact_model, u_str);
+
+        guint g_idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (w->combo_group_full));
+        const gchar *g_str = gtk_string_list_get_string (w->groups_full_model, g_idx);
+        select_in_string_list (w->combo_group_compact, w->groups_compact_model, g_str);
+    }
+
+    gtk_widget_set_visible (w->combo_owner_compact, !show_all);
+    gtk_widget_set_visible (w->combo_owner_full, show_all);
+    gtk_widget_set_visible (w->combo_group_compact, !show_all);
+    gtk_widget_set_visible (w->combo_group_full, show_all);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Асинхронное выполнение команды изменения прав                              */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -548,32 +575,19 @@ on_apply_clicked (GtkButton *btn, gpointer user_data)
 
     gboolean add_x = gtk_check_button_get_active (GTK_CHECK_BUTTON (w->chk_add_x));
     gboolean recursive = gtk_check_button_get_active (GTK_CHECK_BUTTON (w->chk_recursive));
+    gboolean show_all = gtk_check_button_get_active (GTK_CHECK_BUTTON (w->chk_show_all));
 
-    /* Получение Owner (в зависимости от состояния кнопки-карандаша) */
-    g_autofree gchar *owner_name = NULL;
-    if (gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (w->toggle_owner)))
-    {
-        owner_name = clean_entry_value (gtk_editable_get_text (GTK_EDITABLE (w->entry_owner)));
-    }
-    else
-    {
-        guint idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (w->combo_owner));
-        const gchar *raw_owner = gtk_string_list_get_string (w->owners_model, idx);
-        owner_name = clean_entry_value (raw_owner);
-    }
+    GtkWidget *active_owner_combo = show_all ? w->combo_owner_full : w->combo_owner_compact;
+    GtkStringList *active_u_model = show_all ? w->owners_full_model : w->owners_compact_model;
+    guint owner_idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (active_owner_combo));
+    const gchar *raw_owner = gtk_string_list_get_string (active_u_model, owner_idx);
+    g_autofree gchar *owner_name = clean_entry_value (raw_owner);
 
-    /* Получение Group (в зависимости от состояния кнопки-карандаша) */
-    g_autofree gchar *group_name = NULL;
-    if (gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (w->toggle_group)))
-    {
-        group_name = clean_entry_value (gtk_editable_get_text (GTK_EDITABLE (w->entry_group)));
-    }
-    else
-    {
-        guint idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (w->combo_group));
-        const gchar *raw_group = gtk_string_list_get_string (w->groups_model, idx);
-        group_name = clean_entry_value (raw_group);
-    }
+    GtkWidget *active_group_combo = show_all ? w->combo_group_full : w->combo_group_compact;
+    GtkStringList *active_g_model = show_all ? w->groups_full_model : w->groups_compact_model;
+    guint group_idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (active_group_combo));
+    const gchar *raw_group = gtk_string_list_get_string (active_g_model, group_idx);
+    g_autofree gchar *group_name = clean_entry_value (raw_group);
 
     long file_mode = base_mode;
     long dir_mode  = base_mode;
@@ -585,16 +599,17 @@ on_apply_clicked (GtkButton *btn, gpointer user_data)
         if (file_mode & 0004) dir_mode |= 0001;
     }
 
-    GString *cmd = g_string_new (NULL);
+    GString *inner_cmd = g_string_new (NULL);
     gboolean first = TRUE;
 
     for (GList *l = w->target_paths; l != NULL; l = l->next)
     {
-        const gchar *path = (const gchar *) l->data;
-        g_autofree gchar *quoted_path = g_shell_quote (path);
+        const gchar *local_path = (const gchar *) l->data;
+        g_autofree gchar *target_path = translate_to_remote_path (local_path, w->mount_info);
+        g_autofree gchar *quoted_path = g_shell_quote (target_path);
 
         if (!first)
-            g_string_append (cmd, " && ");
+            g_string_append (inner_cmd, " && ");
         first = FALSE;
 
         /* 1. chown */
@@ -609,9 +624,9 @@ on_apply_clicked (GtkButton *btn, gpointer user_data)
                 chown_target = g_strdup_printf (":%s", group_name);
 
             if (recursive)
-                g_string_append_printf (cmd, "chown -R %s %s && ", chown_target, quoted_path);
+                g_string_append_printf (inner_cmd, "chown -R %s %s && ", chown_target, quoted_path);
             else
-                g_string_append_printf (cmd, "chown %s %s && ", chown_target, quoted_path);
+                g_string_append_printf (inner_cmd, "chown %s %s && ", chown_target, quoted_path);
         }
 
         /* 2. chmod */
@@ -619,39 +634,51 @@ on_apply_clicked (GtkButton *btn, gpointer user_data)
         {
             if (add_x)
             {
-                g_string_append_printf (cmd, "find %s -type d -exec chmod %04lo {} + && ", quoted_path, dir_mode);
-                g_string_append_printf (cmd, "find %s -type f -exec chmod %04lo {} +", quoted_path, file_mode);
+                g_string_append_printf (inner_cmd, "find %s -type d -exec chmod %04lo {} + && ", quoted_path, dir_mode);
+                g_string_append_printf (inner_cmd, "find %s -type f -exec chmod %04lo {} +", quoted_path, file_mode);
             }
             else
             {
-                g_string_append_printf (cmd, "chmod -R %04lo %s", base_mode, quoted_path);
+                g_string_append_printf (inner_cmd, "chmod -R %04lo %s", base_mode, quoted_path);
             }
         }
         else
         {
-            if (g_file_test (path, G_FILE_TEST_IS_DIR) && add_x)
-                g_string_append_printf (cmd, "chmod %04lo %s", dir_mode, quoted_path);
+            if (g_file_test (local_path, G_FILE_TEST_IS_DIR) && add_x)
+                g_string_append_printf (inner_cmd, "chmod %04lo %s", dir_mode, quoted_path);
             else
-                g_string_append_printf (cmd, "chmod %04lo %s", file_mode, quoted_path);
+                g_string_append_printf (inner_cmd, "chmod %04lo %s", file_mode, quoted_path);
         }
     }
-
-    log_debug ("[APPLY] Mode(Owner=%s, Group=%s), Command: pkexec sh -c \"%s\"",
-               owner_name, group_name, cmd->str);
 
     g_autoptr (GError) spawn_err = NULL;
     g_autoptr (GSubprocessLauncher) launcher = g_subprocess_launcher_new (
         G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE
     );
+    GSubprocess *proc = NULL;
 
-    GSubprocess *proc = g_subprocess_launcher_spawn (
-        launcher,
-        &spawn_err,
-        "pkexec", "sh", "-c", cmd->str,
-        NULL
-    );
+    if (w->mount_info->mode == FS_MODE_SSHFS && w->mount_info->ssh_host)
+    {
+        log_debug ("[APPLY REMOTE] Server: %s, Command: %s", w->mount_info->ssh_host, inner_cmd->str);
+        proc = g_subprocess_launcher_spawn (
+            launcher,
+            &spawn_err,
+            "ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", w->mount_info->ssh_host, inner_cmd->str,
+            NULL
+        );
+    }
+    else
+    {
+        log_debug ("[APPLY LOCAL] Command: pkexec sh -c \"%s\"", inner_cmd->str);
+        proc = g_subprocess_launcher_spawn (
+            launcher,
+            &spawn_err,
+            "pkexec", "sh", "-c", inner_cmd->str,
+            NULL
+        );
+    }
 
-    g_string_free (cmd, TRUE);
+    g_string_free (inner_cmd, TRUE);
 
     if (spawn_err)
     {
@@ -671,8 +698,287 @@ on_dialog_destroyed (gpointer data, GObject *where_the_object_was)
 {
     PermissionsDialogWidgets *w = (PermissionsDialogWidgets *) data;
     g_active_dialog_window = NULL;
+
     g_list_free_full (w->target_paths, g_free);
+    mount_info_free (w->mount_info);
     g_free (w);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Асинхронное получение данных (Stat + Passwd + Groups)                      */
+/* -------------------------------------------------------------------------- */
+
+static void
+populate_models_from_parsed_data (PermissionsDialogWidgets *w,
+                                  const gchar *passwd_part,
+                                  const gchar *group_part,
+                                  const gchar *shells_part,
+                                  const gchar *initial_owner,
+                                  const gchar *initial_group)
+{
+    GHashTable *seen_u_c = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+    GHashTable *seen_u_f = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+    GHashTable *seen_g_c = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+    GHashTable *seen_g_f = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+
+    #define ADD_U(model, seen, name, uid) do { \
+        if (name && strlen(name) > 0 && !g_hash_table_contains(seen, name)) { \
+            g_hash_table_add(seen, g_strdup(name)); \
+            g_autofree gchar *entry_str = g_strdup_printf("%s [%s]", name, uid); \
+            gtk_string_list_append(model, entry_str); \
+        } \
+    } while (0)
+
+    #define ADD_G(model, seen, name, gid) do { \
+        if (name && strlen(name) > 0 && !g_hash_table_contains(seen, name)) { \
+            g_hash_table_add(seen, g_strdup(name)); \
+            g_autofree gchar *entry_str = g_strdup_printf("%s [%s]", name, gid); \
+            gtk_string_list_append(model, entry_str); \
+        } \
+    } while (0)
+
+    ADD_U (w->owners_compact_model, seen_u_c, "root", "0");
+    ADD_U (w->owners_full_model, seen_u_f, "root", "0");
+    ADD_G (w->groups_compact_model, seen_g_c, "root", "0");
+    ADD_G (w->groups_full_model, seen_g_f, "root", "0");
+
+    if (initial_owner && strlen (initial_owner) > 0)
+    {
+        ADD_U (w->owners_compact_model, seen_u_c, initial_owner, "current");
+        ADD_U (w->owners_full_model, seen_u_f, initial_owner, "current");
+    }
+    if (initial_group && strlen (initial_group) > 0)
+    {
+        ADD_G (w->groups_compact_model, seen_g_c, initial_group, "current");
+        ADD_G (w->groups_full_model, seen_g_f, initial_group, "current");
+    }
+
+    GHashTable *valid_shells = get_valid_shells_set (shells_part);
+
+    if (passwd_part)
+    {
+        gchar **lines = g_strsplit (passwd_part, "\n", -1);
+        for (int i = 0; lines[i] != NULL; i++)
+        {
+            gchar *line = lines[i];
+            if (strlen (line) == 0) continue;
+            gchar **parts = g_strsplit (line, ":", 7);
+            if (parts[0] && parts[2] && parts[6])
+            {
+                const gchar *u_name = parts[0];
+                const gchar *u_uid = parts[2];
+                const gchar *u_shell = parts[6];
+
+                gboolean has_shell = g_hash_table_contains (valid_shells, u_shell);
+                gboolean is_whitelist = is_whitelisted_service_name (u_name);
+                gboolean is_host_user = (w->mount_info->ssh_host && g_strcmp0 (u_name, w->mount_info->ssh_host) == 0);
+
+                ADD_U (w->owners_full_model, seen_u_f, u_name, u_uid);
+                if (has_shell || is_whitelist || is_host_user)
+                {
+                    ADD_U (w->owners_compact_model, seen_u_c, u_name, u_uid);
+                }
+            }
+            g_strfreev (parts);
+        }
+        g_strfreev (lines);
+    }
+
+    if (group_part)
+    {
+        gchar **lines = g_strsplit (group_part, "\n", -1);
+        for (int i = 0; lines[i] != NULL; i++)
+        {
+            gchar *line = lines[i];
+            if (strlen (line) == 0) continue;
+            gchar **parts = g_strsplit (line, ":", 4);
+            if (parts[0] && parts[2])
+            {
+                const gchar *g_name = parts[0];
+                const gchar *g_gid = parts[2];
+
+                gboolean is_whitelist = is_whitelisted_service_name (g_name);
+                gboolean is_user_match = g_hash_table_contains (seen_u_c, g_name);
+
+                ADD_G (w->groups_full_model, seen_g_f, g_name, g_gid);
+                if (is_whitelist || is_user_match)
+                {
+                    ADD_G (w->groups_compact_model, seen_g_c, g_name, g_gid);
+                }
+            }
+            g_strfreev (parts);
+        }
+        g_strfreev (lines);
+    }
+
+    /* Кастомные записи из config.ini */
+    TweaksConfig *config = tweaks_config_load ();
+    if (config && config->extra_users)
+    {
+        for (int i = 0; config->extra_users[i] != NULL; i++)
+        {
+            const gchar *extra = config->extra_users[i];
+            if (strlen (extra) > 0)
+            {
+                ADD_U (w->owners_compact_model, seen_u_c, extra, "custom");
+                ADD_U (w->owners_full_model, seen_u_f, extra, "custom");
+            }
+        }
+    }
+    if (config && config->extra_groups)
+    {
+        for (int i = 0; config->extra_groups[i] != NULL; i++)
+        {
+            const gchar *extra = config->extra_groups[i];
+            if (strlen (extra) > 0)
+            {
+                ADD_G (w->groups_compact_model, seen_g_c, extra, "custom");
+                ADD_G (w->groups_full_model, seen_g_f, extra, "custom");
+            }
+        }
+    }
+    tweaks_config_free (config);
+
+    #undef ADD_U
+    #undef ADD_G
+    g_hash_table_destroy (valid_shells);
+    g_hash_table_destroy (seen_u_c);
+    g_hash_table_destroy (seen_u_f);
+    g_hash_table_destroy (seen_g_c);
+    g_hash_table_destroy (seen_g_f);
+
+    /* Автовыбор активного пользователя и группы */
+    select_in_string_list (w->combo_owner_compact, w->owners_compact_model, initial_owner ? initial_owner : "root");
+    select_in_string_list (w->combo_group_compact, w->groups_compact_model, initial_group ? initial_group : "root");
+
+    /* Останавливаем спиннер и показываем форму */
+    gtk_spinner_stop (GTK_SPINNER (w->spinner));
+    gtk_stack_set_visible_child_name (GTK_STACK (w->stack_pages), "form");
+}
+
+static void
+on_remote_load_finished (GObject *source_object, GAsyncResult *res, gpointer user_data)
+{
+    PermissionsDialogWidgets *w = (PermissionsDialogWidgets *) user_data;
+    GSubprocess *proc = G_SUBPROCESS (source_object);
+    g_autofree gchar *stdout_buf = NULL;
+    g_autoptr (GError) err = NULL;
+
+    g_subprocess_communicate_utf8_finish (proc, res, &stdout_buf, NULL, &err);
+
+    g_autofree gchar *initial_owner = NULL;
+    g_autofree gchar *initial_group = NULL;
+    mode_t initial_mode = 0755;
+
+    gchar *passwd_part = NULL;
+    gchar *group_part = NULL;
+    gchar *shells_part = NULL;
+
+    if (!err && g_subprocess_get_successful (proc) && stdout_buf)
+    {
+        /* Парсим секции */
+        gchar **sections = g_strsplit (stdout_buf, "===PASSWD===\n", 2);
+        gchar *stat_part = sections[0];
+        gchar *rest = sections[1];
+
+        if (stat_part && strlen (g_strstrip (stat_part)) > 0)
+        {
+            gchar **stat_tokens = g_strsplit (stat_part, ":", 5);
+            if (stat_tokens[0] && stat_tokens[1] && stat_tokens[2] && stat_tokens[3] && stat_tokens[4])
+            {
+                initial_owner = g_strdup (stat_tokens[3]);
+                initial_group = g_strdup (stat_tokens[4]);
+                initial_mode = (mode_t) strtol (stat_tokens[2], NULL, 8);
+                log_debug ("[REMOTE STAT ASYNC] Owner: %s, Group: %s, Mode: %04o",
+                           initial_owner, initial_group, (guint) initial_mode);
+            }
+            g_strfreev (stat_tokens);
+        }
+
+        if (rest)
+        {
+            gchar **g_split = g_strsplit (rest, "===GROUPS===\n", 2);
+            passwd_part = g_split[0];
+            if (g_split[1])
+            {
+                gchar **s_split = g_strsplit (g_split[1], "===SHELLS===\n", 2);
+                group_part = s_split[0];
+                shells_part = s_split[1];
+            }
+        }
+
+        apply_mode_to_checkboxes (w, initial_mode);
+        populate_models_from_parsed_data (w, passwd_part, group_part, shells_part, initial_owner, initial_group);
+        g_strfreev (sections);
+    }
+    else
+    {
+        log_debug ("[REMOTE LOAD FAILED] %s", err ? err->message : "unknown error");
+        populate_models_from_parsed_data (w, NULL, NULL, NULL, "root", "root");
+    }
+}
+
+static void
+start_async_data_load (PermissionsDialogWidgets *w, const gchar *first_path)
+{
+    if (w->mount_info->mode == FS_MODE_SSHFS && w->mount_info->ssh_host)
+    {
+        g_autofree gchar *rem_path = translate_to_remote_path (first_path, w->mount_info);
+        g_autofree gchar *quoted_rem = g_shell_quote (rem_path);
+
+        log_debug ("[ASYNC SSH] Starting data fetch from %s", w->mount_info->ssh_host);
+
+        g_autoptr (GError) err = NULL;
+        g_autoptr (GSubprocessLauncher) launcher = g_subprocess_launcher_new (
+            G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE
+        );
+
+        g_autofree gchar *remote_cmd = g_strdup_printf (
+            "stat -c '%%u:%%g:%%a:%%U:%%G' %s 2>/dev/null; echo '===PASSWD==='; getent passwd; echo '===GROUPS==='; getent group; echo '===SHELLS==='; cat /etc/shells 2>/dev/null",
+            quoted_rem
+        );
+
+        GSubprocess *proc = g_subprocess_launcher_spawn (
+            launcher,
+            &err,
+            "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", w->mount_info->ssh_host, remote_cmd,
+            NULL
+        );
+
+        if (proc)
+        {
+            g_subprocess_communicate_utf8_async (proc, NULL, NULL, on_remote_load_finished, w);
+            g_object_unref (proc);
+            return;
+        }
+    }
+
+    /* Локальная загрузка */
+    g_autofree gchar *initial_owner = NULL;
+    g_autofree gchar *initial_group = NULL;
+    mode_t initial_mode = 0755;
+
+    if (first_path)
+    {
+        struct stat st;
+        if (stat (first_path, &st) == 0)
+        {
+            initial_mode = st.st_mode & 07777;
+            struct passwd *pw = getpwuid (st.st_uid);
+            if (pw) initial_owner = g_strdup (pw->pw_name);
+            struct group *gr = getgrgid (st.st_gid);
+            if (gr) initial_group = g_strdup (gr->gr_name);
+        }
+    }
+
+    apply_mode_to_checkboxes (w, initial_mode);
+
+    g_autofree gchar *passwd_out = NULL;
+    g_autofree gchar *group_out = NULL;
+    g_spawn_command_line_sync ("getent passwd", &passwd_out, NULL, NULL, NULL);
+    g_spawn_command_line_sync ("getent group", &group_out, NULL, NULL, NULL);
+
+    populate_models_from_parsed_data (w, passwd_out, group_out, NULL, initial_owner, initial_group);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -685,12 +991,6 @@ create_permissions_window (GList *files)
     PermissionsDialogWidgets *w = g_new0 (PermissionsDialogWidgets, 1);
     w->updating_from_code = FALSE;
 
-    TweaksConfig *config = tweaks_config_load ();
-
-    uid_t initial_uid = 0;
-    gid_t initial_gid = 0;
-    mode_t initial_mode = 0755;
-    gboolean got_stat = FALSE;
     g_autofree gchar *first_path = NULL;
 
     for (GList *l = files; l != NULL; l = l->next)
@@ -704,24 +1004,20 @@ create_permissions_window (GList *files)
             {
                 if (!first_path)
                     first_path = g_strdup (path);
-
-                if (!got_stat)
-                {
-                    struct stat st;
-                    if (stat (path, &st) == 0)
-                    {
-                        initial_uid = st.st_uid;
-                        initial_gid = st.st_gid;
-                        initial_mode = st.st_mode & 07777;
-                        got_stat = TRUE;
-                        log_debug ("[STAT SUCCESS] '%s' -> UID=%u, GID=%u, Mode=%04o",
-                                   path, (guint) st.st_uid, (guint) st.st_gid, (guint) initial_mode);
-                    }
-                }
                 w->target_paths = g_list_append (w->target_paths, path);
             }
         }
     }
+
+    if (first_path)
+        w->mount_info = get_mount_info_for_path (first_path);
+    else
+        w->mount_info = g_new0 (MountInfo, 1);
+
+    w->owners_compact_model = gtk_string_list_new (NULL);
+    w->owners_full_model    = gtk_string_list_new (NULL);
+    w->groups_compact_model = gtk_string_list_new (NULL);
+    w->groups_full_model    = gtk_string_list_new (NULL);
 
     w->window = gtk_window_new ();
     gtk_window_set_title (GTK_WINDOW (w->window), "Permissions");
@@ -730,120 +1026,102 @@ create_permissions_window (GList *files)
 
     g_object_weak_ref (G_OBJECT (w->window), on_dialog_destroyed, w);
 
-    GtkWidget *main_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
-    gtk_widget_set_margin_start (main_box, 16);
-    gtk_widget_set_margin_end (main_box, 16);
-    gtk_widget_set_margin_top (main_box, 16);
-    gtk_widget_set_margin_bottom (main_box, 16);
-    gtk_window_set_child (GTK_WINDOW (w->window), main_box);
+    /* Стек: Загрузка vs Форма */
+    w->stack_pages = gtk_stack_new ();
+    gtk_stack_set_transition_type (GTK_STACK (w->stack_pages), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
+    gtk_window_set_child (GTK_WINDOW (w->window), w->stack_pages);
 
-    /* 0. Путь к целевому файлу/папке */
+    /* --- СТРАНИЦА 1: Загрузка (Spinner) --- */
+    GtkWidget *loading_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 16);
+    gtk_widget_set_valign (loading_box, GTK_ALIGN_CENTER);
+    gtk_widget_set_halign (loading_box, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_top (loading_box, 60);
+    gtk_widget_set_margin_bottom (loading_box, 60);
+    gtk_widget_set_margin_start (loading_box, 40);
+    gtk_widget_set_margin_end (loading_box, 40);
+
+    w->spinner = gtk_spinner_new ();
+    gtk_widget_set_size_request (w->spinner, 36, 36);
+    gtk_spinner_start (GTK_SPINNER (w->spinner));
+    gtk_box_append (GTK_BOX (loading_box), w->spinner);
+
+    w->lbl_loading = gtk_label_new (
+        (w->mount_info->mode == FS_MODE_SSHFS)
+        ? "Загрузка пользователей и прав с сервера..."
+        : "Чтение прав доступа..."
+    );
+    gtk_widget_add_css_class (w->lbl_loading, "dim-label");
+    gtk_box_append (GTK_BOX (loading_box), w->lbl_loading);
+
+    gtk_stack_add_named (GTK_STACK (w->stack_pages), loading_box, "loading");
+
+    /* --- СТРАНИЦА 2: Основная форма --- */
+    GtkWidget *form_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
+    gtk_widget_set_margin_start (form_box, 16);
+    gtk_widget_set_margin_end (form_box, 16);
+    gtk_widget_set_margin_top (form_box, 16);
+    gtk_widget_set_margin_bottom (form_box, 16);
+    gtk_stack_add_named (GTK_STACK (w->stack_pages), form_box, "form");
+
+    /* 0. Целевой путь */
     g_autofree gchar *target_label_text = NULL;
     guint target_count = g_list_length (w->target_paths);
     if (target_count == 1 && first_path)
     {
-        target_label_text = g_strdup_printf ("Target: %s", first_path);
+        if (w->mount_info->mode == FS_MODE_SSHFS && w->mount_info->ssh_host)
+        {
+            g_autofree gchar *rem = translate_to_remote_path (first_path, w->mount_info);
+            target_label_text = g_strdup_printf ("Target (SSH: %s): %s", w->mount_info->ssh_host, rem);
+        }
+        else
+        {
+            target_label_text = g_strdup_printf ("Target: %s", first_path);
+        }
     }
     else
     {
         target_label_text = g_strdup_printf ("Selected: %u items", target_count);
     }
 
-    GtkWidget *lbl_target_path = gtk_label_new (target_label_text);
-    gtk_widget_set_halign (lbl_target_path, GTK_ALIGN_START);
-    gtk_label_set_ellipsize (GTK_LABEL (lbl_target_path), PANGO_ELLIPSIZE_START);
-    gtk_widget_add_css_class (lbl_target_path, "dim-label");
-    gtk_box_append (GTK_BOX (main_box), lbl_target_path);
+    w->lbl_target_path = gtk_label_new (target_label_text);
+    gtk_widget_set_halign (w->lbl_target_path, GTK_ALIGN_START);
+    gtk_label_set_ellipsize (GTK_LABEL (w->lbl_target_path), PANGO_ELLIPSIZE_START);
+    gtk_widget_add_css_class (w->lbl_target_path, "dim-label");
+    gtk_box_append (GTK_BOX (form_box), w->lbl_target_path);
 
-    /* 1. Блок Owner / Group (GtkStack с GtkDropDown и GtkEntry + Кнопка Карандаша) */
+    /* 1. Блок Owner / Group (Два независимых выпадающих списка с поиском) */
     GtkWidget *grid_top = gtk_grid_new ();
-    gtk_grid_set_column_spacing (GTK_GRID (grid_top), 8);
+    gtk_grid_set_column_spacing (GTK_GRID (grid_top), 12);
     gtk_grid_set_row_spacing (GTK_GRID (grid_top), 8);
 
-    /* --- Owner --- */
     GtkWidget *lbl_owner = gtk_label_new ("Owner:");
     gtk_widget_set_halign (lbl_owner, GTK_ALIGN_START);
     gtk_grid_attach (GTK_GRID (grid_top), lbl_owner, 0, 0, 1, 1);
 
-    w->owners_model = build_users_string_list (config);
-    w->combo_owner  = gtk_drop_down_new (G_LIST_MODEL (w->owners_model), NULL);
-    w->entry_owner  = gtk_entry_new ();
-    gtk_entry_set_placeholder_text (GTK_ENTRY (w->entry_owner), "Логин или UID пользователя");
+    w->combo_owner_compact = create_searchable_dropdown (w->owners_compact_model);
+    w->combo_owner_full    = create_searchable_dropdown (w->owners_full_model);
+    gtk_widget_set_visible (w->combo_owner_full, FALSE);
+    gtk_grid_attach (GTK_GRID (grid_top), w->combo_owner_compact, 1, 0, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_top), w->combo_owner_full, 1, 0, 1, 1);
 
-    w->stack_owner  = gtk_stack_new ();
-    gtk_stack_set_transition_type (GTK_STACK (w->stack_owner), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
-    gtk_widget_set_hexpand (w->stack_owner, TRUE);
-    gtk_stack_add_named (GTK_STACK (w->stack_owner), w->combo_owner, "dropdown");
-    gtk_stack_add_named (GTK_STACK (w->stack_owner), w->entry_owner, "entry");
-    gtk_grid_attach (GTK_GRID (grid_top), w->stack_owner, 1, 0, 1, 1);
-
-    w->toggle_owner = gtk_toggle_button_new ();
-    gtk_button_set_icon_name (GTK_BUTTON (w->toggle_owner), "document-edit-symbolic");
-    gtk_widget_set_tooltip_text (w->toggle_owner, "Ввести вручную");
-    g_signal_connect (w->toggle_owner, "toggled", G_CALLBACK (on_owner_toggle_toggled), w);
-    gtk_grid_attach (GTK_GRID (grid_top), w->toggle_owner, 2, 0, 1, 1);
-
-    /* --- Group --- */
     GtkWidget *lbl_group = gtk_label_new ("Group:");
     gtk_widget_set_halign (lbl_group, GTK_ALIGN_START);
     gtk_grid_attach (GTK_GRID (grid_top), lbl_group, 0, 1, 1, 1);
 
-    w->groups_model = build_groups_string_list (config);
-    w->combo_group  = gtk_drop_down_new (G_LIST_MODEL (w->groups_model), NULL);
-    w->entry_group  = gtk_entry_new ();
-    gtk_entry_set_placeholder_text (GTK_ENTRY (w->entry_group), "Имя группы или GID");
+    w->combo_group_compact = create_searchable_dropdown (w->groups_compact_model);
+    w->combo_group_full    = create_searchable_dropdown (w->groups_full_model);
+    gtk_widget_set_visible (w->combo_group_full, FALSE);
+    gtk_grid_attach (GTK_GRID (grid_top), w->combo_group_compact, 1, 1, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_top), w->combo_group_full, 1, 1, 1, 1);
 
-    w->stack_group  = gtk_stack_new ();
-    gtk_stack_set_transition_type (GTK_STACK (w->stack_group), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
-    gtk_widget_set_hexpand (w->stack_group, TRUE);
-    gtk_stack_add_named (GTK_STACK (w->stack_group), w->combo_group, "dropdown");
-    gtk_stack_add_named (GTK_STACK (w->stack_group), w->entry_group, "entry");
-    gtk_grid_attach (GTK_GRID (grid_top), w->stack_group, 1, 1, 1, 1);
+    gtk_box_append (GTK_BOX (form_box), grid_top);
 
-    w->toggle_group = gtk_toggle_button_new ();
-    gtk_button_set_icon_name (GTK_BUTTON (w->toggle_group), "document-edit-symbolic");
-    gtk_widget_set_tooltip_text (w->toggle_group, "Ввести вручную");
-    g_signal_connect (w->toggle_group, "toggled", G_CALLBACK (on_group_toggle_toggled), w);
-    gtk_grid_attach (GTK_GRID (grid_top), w->toggle_group, 2, 1, 1, 1);
+    /* Чекбокс «Показать всех» */
+    w->chk_show_all = gtk_check_button_new_with_label ("Показать всех пользователей и группы");
+    g_signal_connect (w->chk_show_all, "toggled", G_CALLBACK (on_show_all_toggled), w);
+    gtk_box_append (GTK_BOX (form_box), w->chk_show_all);
 
-    /* Автовыбор текущих Owner / Group */
-    if (got_stat)
-    {
-        struct passwd *pw = getpwuid (initial_uid);
-        if (pw)
-        {
-            guint n_items = g_list_model_get_n_items (G_LIST_MODEL (w->owners_model));
-            for (guint i = 0; i < n_items; i++)
-            {
-                const gchar *item_str = gtk_string_list_get_string (w->owners_model, i);
-                g_autofree gchar *name = clean_entry_value (item_str);
-                if (g_strcmp0 (name, pw->pw_name) == 0)
-                {
-                    gtk_drop_down_set_selected (GTK_DROP_DOWN (w->combo_owner), i);
-                    break;
-                }
-            }
-        }
-
-        struct group *gr = getgrgid (initial_gid);
-        if (gr)
-        {
-            guint n_items = g_list_model_get_n_items (G_LIST_MODEL (w->groups_model));
-            for (guint i = 0; i < n_items; i++)
-            {
-                const gchar *item_str = gtk_string_list_get_string (w->groups_model, i);
-                g_autofree gchar *name = clean_entry_value (item_str);
-                if (g_strcmp0 (name, gr->gr_name) == 0)
-                {
-                    gtk_drop_down_set_selected (GTK_DROP_DOWN (w->combo_group), i);
-                    break;
-                }
-            }
-        }
-    }
-
-    gtk_box_append (GTK_BOX (main_box), grid_top);
-    gtk_box_append (GTK_BOX (main_box), gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
+    gtk_box_append (GTK_BOX (form_box), gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
 
     /* 2. Блок Permissions */
     GtkWidget *grid_perm = gtk_grid_new ();
@@ -855,7 +1133,6 @@ create_permissions_window (GList *files)
     gtk_widget_set_valign (lbl_perm_title, GTK_ALIGN_START);
     gtk_grid_attach (GTK_GRID (grid_perm), lbl_perm_title, 0, 0, 1, 5);
 
-    /* Метки строк */
     GtkWidget *lbl_u = gtk_label_new_with_mnemonic ("_Owner");
     GtkWidget *lbl_g = gtk_label_new_with_mnemonic ("_Group");
     GtkWidget *lbl_o = gtk_label_new_with_mnemonic ("Ot_hers");
@@ -900,7 +1177,7 @@ create_permissions_window (GList *files)
     gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_x,      4, 2, 1, 1);
     gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_sticky, 5, 2, 1, 1);
 
-    /* Поле Octal */
+    /* Octal */
     w->entry_octal = gtk_entry_new ();
     gtk_entry_set_max_length (GTK_ENTRY (w->entry_octal), 5);
     gtk_grid_attach (GTK_GRID (grid_perm), w->entry_octal, 2, 3, 2, 1);
@@ -909,12 +1186,12 @@ create_permissions_window (GList *files)
     w->chk_add_x = gtk_check_button_new_with_mnemonic ("Add _X to directories");
     gtk_grid_attach (GTK_GRID (grid_perm), w->chk_add_x, 2, 4, 4, 1);
 
-    gtk_box_append (GTK_BOX (main_box), grid_perm);
-    gtk_box_append (GTK_BOX (main_box), gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
+    gtk_box_append (GTK_BOX (form_box), grid_perm);
+    gtk_box_append (GTK_BOX (form_box), gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
 
     /* 3. Чекбокс рекурсивности */
     w->chk_recursive = gtk_check_button_new_with_mnemonic ("Set owner, group and permissions _recursively");
-    gtk_box_append (GTK_BOX (main_box), w->chk_recursive);
+    gtk_box_append (GTK_BOX (form_box), w->chk_recursive);
 
     /* 4. Кнопки Отмена / Применить */
     GtkWidget *btn_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
@@ -930,10 +1207,7 @@ create_permissions_window (GList *files)
 
     gtk_box_append (GTK_BOX (btn_box), btn_cancel);
     gtk_box_append (GTK_BOX (btn_box), btn_apply);
-    gtk_box_append (GTK_BOX (main_box), btn_box);
-
-    /* Выставляем считанные права */
-    apply_mode_to_checkboxes (w, initial_mode);
+    gtk_box_append (GTK_BOX (form_box), btn_box);
 
     /* Подключаем сигналы пересчёта */
     GtkWidget *all_checks[] = {
@@ -948,7 +1222,9 @@ create_permissions_window (GList *files)
 
     g_signal_connect (w->entry_octal, "changed", G_CALLBACK (on_octal_entry_changed), w);
 
-    tweaks_config_free (config);
+    /* Запускаем фоновую загрузку данных */
+    start_async_data_load (w, first_path);
+
     return w->window;
 }
 
@@ -976,6 +1252,23 @@ nautilus_tweaks_permissions_get_file_items (NautilusMenuProvider *provider, GLis
 {
     if (g_list_length (files) == 0)
         return NULL;
+
+    NautilusFileInfo *first_file = NAUTILUS_FILE_INFO (files->data);
+    g_autoptr (GFile) loc = nautilus_file_info_get_location (first_file);
+    if (loc)
+    {
+        g_autofree gchar *path = g_file_get_path (loc);
+        if (path)
+        {
+            MountInfo *info = get_mount_info_for_path (path);
+            if (info->mode == FS_MODE_RCLONE)
+            {
+                mount_info_free (info);
+                return NULL;
+            }
+            mount_info_free (info);
+        }
+    }
 
     GList *items = NULL;
     g_autofree gchar *perm_id = g_strdup_printf ("NautilusTweaks::Permissions_%u", ++g_permissions_action_counter);
@@ -1010,6 +1303,18 @@ nautilus_tweaks_permissions_get_background_items (NautilusMenuProvider *provider
     g_autoptr (GFile) location = nautilus_file_info_get_location (current_folder);
     if (!location)
         return NULL;
+
+    g_autofree gchar *target_path = g_file_get_path (location);
+    if (!target_path)
+        return NULL;
+
+    MountInfo *info = get_mount_info_for_path (target_path);
+    if (info->mode == FS_MODE_RCLONE)
+    {
+        mount_info_free (info);
+        return NULL;
+    }
+    mount_info_free (info);
 
     GList *items = NULL;
     g_autofree gchar *bg_perm_id = g_strdup_printf ("NautilusTweaks::BgPermissions_%u", ++g_permissions_action_counter);
