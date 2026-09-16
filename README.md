@@ -54,28 +54,19 @@ Host ruweb
     # RemotePath: /var/www/site
 ```
 
-## Как компилировать .so
+## Как компилировать
 
-#### Компилируем
+*Установить*
 ```bash
-gcc -shared -fPIC -O2 nautilus-custom-actions.c -o libcustom_actions.so $(pkg-config --cflags --libs libnautilus-extension-4 gtk4)
-```
-
-#### Копируем в папку плагинов
-*Для текущего пользователя:*
-```bash
-mkdir -p ~/.local/share/nautilus/extensions-4/
-cp libcustom_actions.so ~/.local/share/nautilus/extensions-4/
-```
-*Или глобально для системы:*
-```bash
-sudo cp libcustom_actions.so /usr/lib/nautilus/extensions-4/
+sudo make install
 ```
 
-#### Перезапускаем Nautilus
+*Удалить*
 ```bash
-nautilus -q
+sudo make uninstall
 ```
+
+Nautilus должен закрыться сам в процессе установки
 
 ## Зависимости
 

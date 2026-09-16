@@ -1,0 +1,452 @@
+#include <nautilus-extension.h>
+#include <gtk/gtk.h>
+#include <gio/gio.h>
+#include <gdk/gdk.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <limits.h>
+
+#include "tweaks-config.h"
+
+/* Счётчик для генерации уникальных ID пунктов меню */
+static guint g_action_counter = 0;
+
+/* -------------------------------------------------------------------------- */
+/* Объявление структуры GObject-плагина                                       */
+/* -------------------------------------------------------------------------- */
+
+typedef struct _NautilusTweaksActions {
+    GObject parent_instance;
+} NautilusTweaksActions;
+
+typedef struct _NautilusTweaksActionsClass {
+    GObjectClass parent_class;
+} NautilusTweaksActionsClass;
+
+static GType nautilus_tweaks_actions_get_type (void);
+static void nautilus_tweaks_actions_menu_provider_iface_init (NautilusMenuProviderInterface *iface);
+
+G_DEFINE_DYNAMIC_TYPE_EXTENDED (NautilusTweaksActions, nautilus_tweaks_actions, G_TYPE_OBJECT, 0,
+    G_IMPLEMENT_INTERFACE_DYNAMIC (NAUTILUS_TYPE_MENU_PROVIDER,
+                                   nautilus_tweaks_actions_menu_provider_iface_init))
+
+static void nautilus_tweaks_actions_class_init (NautilusTweaksActionsClass *klass) {}
+static void nautilus_tweaks_actions_init (NautilusTweaksActions *self) {}
+static void nautilus_tweaks_actions_class_finalize (NautilusTweaksActionsClass *klass) {}
+
+/* -------------------------------------------------------------------------- */
+/* Вспомогательный хелпер: Запуск команд в терминале                           */
+/* -------------------------------------------------------------------------- */
+
+static void
+launch_in_terminal (const gchar *terminal, const gchar *command)
+{
+    gint term_argc = 0;
+    gchar **term_argv = NULL;
+
+    if (!g_shell_parse_argv (terminal, &term_argc, &term_argv, NULL) || term_argc == 0)
+    {
+        const gchar *fallback_argv[] = { "kgx", "--", "sh", "-c", command, NULL };
+        g_spawn_async (NULL, (gchar **) fallback_argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+        return;
+    }
+
+    GPtrArray *argv_array = g_ptr_array_new ();
+    for (int i = 0; i < term_argc; i++)
+        g_ptr_array_add (argv_array, term_argv[i]);
+
+    const gchar *last_token = term_argv[term_argc - 1];
+
+    /* kgx / gnome-terminal / ptyxis */
+    if (g_strcmp0 (last_token, "kgx") == 0 ||
+        g_strcmp0 (last_token, "gnome-console") == 0 ||
+        g_strcmp0 (last_token, "gnome-terminal") == 0 ||
+        g_strcmp0 (last_token, "ptyxis") == 0)
+    {
+        g_ptr_array_add (argv_array, "--");
+        g_ptr_array_add (argv_array, "sh");
+        g_ptr_array_add (argv_array, "-c");
+        g_ptr_array_add (argv_array, (gchar *) command);
+    }
+    /* Terminator */
+    else if (g_strcmp0 (last_token, "terminator") == 0)
+    {
+        g_ptr_array_add (argv_array, "-e");
+        g_ptr_array_add (argv_array, (gchar *) command);
+    }
+    /* kitty и foot */
+    else if (g_strcmp0 (last_token, "kitty") == 0 || g_strcmp0 (last_token, "foot") == 0)
+    {
+        g_ptr_array_add (argv_array, "sh");
+        g_ptr_array_add (argv_array, "-c");
+        g_ptr_array_add (argv_array, (gchar *) command);
+    }
+    /* ghostty / alacritty */
+    else
+    {
+        g_ptr_array_add (argv_array, "-e");
+        g_ptr_array_add (argv_array, "sh");
+        g_ptr_array_add (argv_array, "-c");
+        g_ptr_array_add (argv_array, (gchar *) command);
+    }
+
+    g_ptr_array_add (argv_array, NULL);
+
+    g_spawn_async (NULL, (gchar **) argv_array->pdata, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+
+    g_ptr_array_free (argv_array, TRUE);
+    g_strfreev (term_argv);
+}
+
+/* -------------------------------------------------------------------------- */
+/* 1. Действие: Копирование пути                                              */
+/* -------------------------------------------------------------------------- */
+
+static void
+on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
+{
+    GList *files = (GList *) user_data;
+    TweaksConfig *config = tweaks_config_load ();
+
+    const gchar *home = g_get_home_dir ();
+    gsize home_len = home ? strlen (home) : 0;
+    GString *text = g_string_new (NULL);
+    GList *l;
+    gboolean first = TRUE;
+
+    for (l = files; l != NULL; l = l->next)
+    {
+        NautilusFileInfo *file = NAUTILUS_FILE_INFO (l->data);
+        g_autoptr (GFile) location = nautilus_file_info_get_location (file);
+        if (!location)
+            continue;
+
+        g_autofree gchar *path = g_file_get_path (location);
+        if (!path)
+            continue;
+
+        g_autofree gchar *target_path = NULL;
+
+        /* Резолв симлинка */
+        if (config->resolve_symlinks && g_file_test (path, G_FILE_TEST_IS_SYMLINK))
+        {
+            char *resolved = realpath (path, NULL);
+            if (resolved)
+            {
+                target_path = g_strdup (resolved);
+                free (resolved);
+            }
+            else
+            {
+                g_autofree gchar *raw_link = g_file_read_link (path, NULL);
+                if (raw_link)
+                {
+                    if (g_path_is_absolute (raw_link))
+                    {
+                        target_path = g_strdup (raw_link);
+                    }
+                    else
+                    {
+                        g_autofree gchar *parent_dir = g_path_get_dirname (path);
+                        target_path = g_build_filename (parent_dir, raw_link, NULL);
+                    }
+
+                    const gchar *notify_argv[] = {
+                        "notify-send",
+                        "-u", "critical",
+                        "-i", "dialog-warning",
+                        "Битый симлинк",
+                        "Конечный файл не существует, но ссылка всё равно скопирована в буфер",
+                        NULL
+                    };
+                    g_spawn_async (NULL, (gchar **) notify_argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+                }
+            }
+        }
+
+        const gchar *final_path = target_path ? target_path : path;
+
+        if (!first)
+            g_string_append_c (text, '\n');
+        first = FALSE;
+
+        /* Сокращение $HOME до ~ */
+        if (config->shorten_home && home && g_strcmp0 (final_path, home) == 0)
+        {
+            g_string_append (text, "~");
+        }
+        else if (config->shorten_home && home && g_str_has_prefix (final_path, home) && final_path[home_len] == '/')
+        {
+            g_string_append_c (text, '~');
+            g_string_append (text, final_path + home_len);
+        }
+        else
+        {
+            g_string_append (text, final_path);
+        }
+    }
+
+    if (text->len > 0)
+    {
+        GdkDisplay *display = gdk_display_get_default ();
+        if (display)
+        {
+            GdkClipboard *clipboard = gdk_display_get_clipboard (display);
+            gdk_clipboard_set_text (clipboard, text->str);
+        }
+    }
+
+    g_string_free (text, TRUE);
+    tweaks_config_free (config);
+}
+
+/* -------------------------------------------------------------------------- */
+/* 2. Действие: Открыть папку в VS Code                                       */
+/* -------------------------------------------------------------------------- */
+
+static void
+on_open_in_code_activated (NautilusMenuItem *item, gpointer user_data)
+{
+    gchar *path = (gchar *) user_data;
+    const gchar *argv[] = { "code", path, NULL };
+    g_spawn_async (NULL, (gchar **) argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+}
+
+/* -------------------------------------------------------------------------- */
+/* 3. Действие: Открыть / Редактировать как root                              */
+/* -------------------------------------------------------------------------- */
+
+static void
+on_open_as_root_activated (NautilusMenuItem *item, gpointer user_data)
+{
+    NautilusFileInfo *file = NAUTILUS_FILE_INFO (user_data);
+    g_autoptr (GFile) location = nautilus_file_info_get_location (file);
+    if (!location)
+        return;
+
+    g_autofree gchar *path = g_file_get_path (location);
+    if (!path)
+        return;
+
+    gboolean is_dir = nautilus_file_info_is_directory (file);
+
+    if (is_dir)
+    {
+        g_autofree gchar *admin_uri = g_strdup_printf ("admin://%s", path);
+        const gchar *argv[] = { "nautilus", admin_uri, NULL };
+        g_spawn_async (NULL, (gchar **) argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+    }
+    else
+    {
+        TweaksConfig *config = tweaks_config_load ();
+        g_autofree gchar *cmd = g_strdup_printf ("sudo %s \"%s\"", config->editor, path);
+        launch_in_terminal (config->terminal, cmd);
+        tweaks_config_free (config);
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/* 4. Контекстное меню для выбранных файлов/папок                             */
+/* -------------------------------------------------------------------------- */
+
+static GList *
+nautilus_tweaks_actions_get_file_items (NautilusMenuProvider *provider, GList *files)
+{
+    GList *items = NULL;
+    guint len = g_list_length (files);
+
+    if (len == 0)
+        return NULL;
+
+    TweaksConfig *config = tweaks_config_load ();
+
+    /* --- Пункт 1: Копировать путь --- */
+    g_autofree gchar *copy_label = NULL;
+    if (len == 1)
+    {
+        NautilusFileInfo *first_file = NAUTILUS_FILE_INFO (files->data);
+        if (nautilus_file_info_is_directory (first_file))
+            copy_label = g_strdup ("Копировать путь к папке");
+        else
+            copy_label = g_strdup ("Копировать путь к файлу");
+    }
+    else
+    {
+        copy_label = g_strdup_printf ("Копировать пути (%u)", len);
+    }
+
+    g_autofree gchar *copy_id = g_strdup_printf ("NautilusTweaks::CopyPath_%u", ++g_action_counter);
+    NautilusMenuItem *copy_item = nautilus_menu_item_new (
+        copy_id,
+        copy_label,
+        "Копирует путь в буфер обмена",
+        "edit-copy-symbolic"
+    );
+
+    g_signal_connect_data (copy_item, "activate",
+                           G_CALLBACK (on_copy_path_activated),
+                           nautilus_file_info_list_copy (files),
+                           (GClosureNotify) nautilus_file_info_list_free, 0);
+
+    items = g_list_append (items, copy_item);
+
+    /* --- Блок для одного выбранного объекта --- */
+    if (len == 1)
+    {
+        NautilusFileInfo *first_file = NAUTILUS_FILE_INFO (files->data);
+        gboolean is_dir = nautilus_file_info_is_directory (first_file);
+        g_autoptr (GFile) location = nautilus_file_info_get_location (first_file);
+        g_autofree gchar *target_path = location ? g_file_get_path (location) : NULL;
+
+        /* --- Пункт 2: Открыть папку в VS Code (только для папок) --- */
+        if (is_dir && target_path)
+        {
+            g_autofree gchar *code_id = g_strdup_printf ("NautilusTweaks::OpenInCode_%u", ++g_action_counter);
+            NautilusMenuItem *code_item = nautilus_menu_item_new (
+                code_id,
+                "Открыть папку в VS Code",
+                "Открыть эту директорию как проект в VS Code",
+                "com.visualstudio.code"
+            );
+
+            g_signal_connect_data (code_item, "activate",
+                                   G_CALLBACK (on_open_in_code_activated),
+                                   g_strdup (target_path),
+                                   (GClosureNotify) g_free, 0);
+
+            items = g_list_append (items, code_item);
+        }
+
+        /* --- Пункт 3: Открыть / Редактировать как root --- */
+        g_autofree gchar *root_label = NULL;
+        if (is_dir)
+            root_label = g_strdup ("Открыть как root");
+        else
+            root_label = g_strdup_printf ("Редактировать как root (%s)", config->editor);
+
+        const gchar *root_tip   = is_dir ? "Открыть эту папку в Nautilus с правами администратора"
+                                         : "Редактировать файл в консольном редакторе от имени root";
+        const gchar *root_icon  = is_dir ? "folder-remote-symbolic" : "accessories-text-editor-symbolic";
+
+        g_autofree gchar *root_id = g_strdup_printf ("NautilusTweaks::OpenAsRoot_%u", ++g_action_counter);
+        NautilusMenuItem *root_item = nautilus_menu_item_new (
+            root_id,
+            root_label,
+            root_tip,
+            root_icon
+        );
+
+        g_signal_connect_data (root_item, "activate",
+                               G_CALLBACK (on_open_as_root_activated),
+                               g_object_ref (first_file),
+                               (GClosureNotify) g_object_unref, 0);
+
+        items = g_list_append (items, root_item);
+    }
+
+    tweaks_config_free (config);
+    return items;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 5. Контекстное меню пустого пространства (Background Menu)                  */
+/* -------------------------------------------------------------------------- */
+
+static GList *
+nautilus_tweaks_actions_get_background_items (NautilusMenuProvider *provider,
+                                              NautilusFileInfo     *current_folder)
+{
+    if (!current_folder)
+        return NULL;
+
+    g_autoptr (GFile) location = nautilus_file_info_get_location (current_folder);
+    if (!location)
+        return NULL;
+
+    g_autofree gchar *target_path = g_file_get_path (location);
+    if (!target_path)
+        return NULL;
+
+    GList *items = NULL;
+
+    /* 1. Копировать путь к текущей папке */
+    g_autofree gchar *bg_copy_id = g_strdup_printf ("NautilusTweaks::BgCopyPath_%u", ++g_action_counter);
+    NautilusMenuItem *copy_item = nautilus_menu_item_new (
+        bg_copy_id,
+        "Копировать путь к папке",
+        "Копирует путь текущей папки в буфер обмена",
+        "edit-copy-symbolic"
+    );
+
+    GList *single_list = g_list_append (NULL, current_folder);
+    g_signal_connect_data (copy_item, "activate",
+                           G_CALLBACK (on_copy_path_activated),
+                           nautilus_file_info_list_copy (single_list),
+                           (GClosureNotify) nautilus_file_info_list_free, 0);
+    g_list_free (single_list);
+    items = g_list_append (items, copy_item);
+
+    /* 2. Открыть текущую папку в VS Code */
+    g_autofree gchar *bg_code_id = g_strdup_printf ("NautilusTweaks::BgOpenInCode_%u", ++g_action_counter);
+    NautilusMenuItem *code_item = nautilus_menu_item_new (
+        bg_code_id,
+        "Открыть папку в VS Code",
+        "Открыть текущую директорию как проект в VS Code",
+        "com.visualstudio.code"
+    );
+
+    g_signal_connect_data (code_item, "activate",
+                           G_CALLBACK (on_open_in_code_activated),
+                           g_strdup (target_path),
+                           (GClosureNotify) g_free, 0);
+    items = g_list_append (items, code_item);
+
+    /* 3. Открыть текущую папку как root */
+    g_autofree gchar *bg_root_id = g_strdup_printf ("NautilusTweaks::BgOpenAsRoot_%u", ++g_action_counter);
+    NautilusMenuItem *root_item = nautilus_menu_item_new (
+        bg_root_id,
+        "Открыть как root",
+        "Открыть текущую папку в Nautilus с правами администратора",
+        "folder-remote-symbolic"
+    );
+
+    g_signal_connect_data (root_item, "activate",
+                           G_CALLBACK (on_open_as_root_activated),
+                           g_object_ref (current_folder),
+                           (GClosureNotify) g_object_unref, 0);
+    items = g_list_append (items, root_item);
+
+    return items;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Инициализация модуля расширения Nautilus                                   */
+/* -------------------------------------------------------------------------- */
+
+static void
+nautilus_tweaks_actions_menu_provider_iface_init (NautilusMenuProviderInterface *iface)
+{
+    iface->get_file_items = nautilus_tweaks_actions_get_file_items;
+    iface->get_background_items = nautilus_tweaks_actions_get_background_items;
+}
+
+void
+nautilus_module_initialize (GTypeModule *module)
+{
+    nautilus_tweaks_actions_register_type (module);
+}
+
+void
+nautilus_module_shutdown (void)
+{
+}
+
+void
+nautilus_module_list_types (const GType **types, int *num_types)
+{
+    static GType type_list[1];
+    type_list[0] = nautilus_tweaks_actions_get_type ();
+    *types = type_list;
+    *num_types = 1;
+}
