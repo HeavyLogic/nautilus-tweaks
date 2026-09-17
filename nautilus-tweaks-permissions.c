@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <errno.h>
 
+#include "tweaks-log.h"
 #include "tweaks-config.h"
 
 static guint g_permissions_action_counter = 0;
@@ -43,33 +44,23 @@ mount_info_free (MountInfo *info)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Logging to ~/.config/nautilus-tweaks/debug.log                             */
+/* Path helper functions                                                      */
 /* -------------------------------------------------------------------------- */
 
-static void
-log_debug (const gchar *format, ...)
+static gchar *
+format_path_for_display (const gchar *path)
 {
-    const gchar *config_dir = g_get_user_config_dir ();
-    g_autofree gchar *log_dir = g_build_filename (config_dir, "nautilus-tweaks", NULL);
-    g_mkdir_with_parents (log_dir, 0755);
-    g_autofree gchar *log_path = g_build_filename (log_dir, "debug.log", NULL);
+    if (!path)
+        return g_strdup ("");
 
-    FILE *fp = fopen (log_path, "a");
-    if (!fp)
-        return;
-
-    GDateTime *now = g_date_time_new_now_local ();
-    g_autofree gchar *time_str = g_date_time_format (now, "%Y-%m-%d %H:%M:%S");
-    g_date_time_unref (now);
-
-    va_list args;
-    va_start (args, format);
-    g_autofree gchar *msg = g_strdup_vprintf (format, args);
-    va_end (args);
-
-    fprintf (fp, "[%s] %s\n", time_str, msg);
-    fflush (fp);
-    fclose (fp);
+    const gchar *home = g_get_home_dir ();
+    if (home && g_str_has_prefix (path, home))
+    {
+        gsize home_len = strlen (home);
+        if (path[home_len] == '/' || path[home_len] == '\0')
+            return g_strdup_printf ("~%s", path + home_len);
+    }
+    return g_strdup (path);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -176,18 +167,11 @@ typedef struct {
     GtkWidget *lbl_target_path;
 
     /* Dropdown selectors */
-    GtkWidget     *combo_owner_compact;
-    GtkWidget     *combo_owner_full;
-    GtkStringList *owners_compact_model;
-    GtkStringList *owners_full_model;
+    GtkWidget     *combo_owner;
+    GtkStringList *owners_model;
 
-    GtkWidget     *combo_group_compact;
-    GtkWidget     *combo_group_full;
-    GtkStringList *groups_compact_model;
-    GtkStringList *groups_full_model;
-
-    /* Checkbox to show all users and groups */
-    GtkWidget *chk_show_all;
+    GtkWidget     *combo_group;
+    GtkStringList *groups_model;
 
     /* Permission checkboxes (3x4) */
     GtkWidget *chk_u_r;
@@ -355,63 +339,6 @@ on_octal_entry_changed (GtkEditable *editable, gpointer user_data)
 /* Building user and group lists                                              */
 /* -------------------------------------------------------------------------- */
 
-static gboolean
-is_whitelisted_service_name (const gchar *name)
-{
-    const gchar *whitelist[] = {
-        "www-data", "http", "nginx", "phpmyadmin", "mysql", "redis",
-        "ftp", "git", "docker", "wheel", "sudo", "users", "storage", "nobody", "nogroup", NULL
-    };
-    for (int i = 0; whitelist[i] != NULL; i++)
-    {
-        if (g_strcmp0 (name, whitelist[i]) == 0)
-            return TRUE;
-    }
-    return FALSE;
-}
-
-static GHashTable *
-get_valid_shells_set (const gchar *shells_raw)
-{
-    GHashTable *table = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
-
-    if (shells_raw && strlen (shells_raw) > 0)
-    {
-        gchar **lines = g_strsplit (shells_raw, "\n", -1);
-        for (int i = 0; lines[i] != NULL; i++)
-        {
-            gchar *trimmed = g_strstrip (lines[i]);
-            if (trimmed[0] != '#' && strlen (trimmed) > 0)
-                g_hash_table_add (table, g_strdup (trimmed));
-        }
-        g_strfreev (lines);
-    }
-    else
-    {
-        FILE *fp = fopen ("/etc/shells", "r");
-        if (fp)
-        {
-            char line[256];
-            while (fgets (line, sizeof (line), fp))
-            {
-                gchar *trimmed = g_strstrip (line);
-                if (trimmed[0] != '#' && strlen (trimmed) > 0)
-                    g_hash_table_add (table, g_strdup (trimmed));
-            }
-            fclose (fp);
-        }
-    }
-
-    g_hash_table_add (table, g_strdup ("/bin/bash"));
-    g_hash_table_add (table, g_strdup ("/usr/bin/bash"));
-    g_hash_table_add (table, g_strdup ("/bin/sh"));
-    g_hash_table_add (table, g_strdup ("/usr/bin/sh"));
-    g_hash_table_add (table, g_strdup ("/bin/zsh"));
-    g_hash_table_add (table, g_strdup ("/usr/bin/zsh"));
-
-    return table;
-}
-
 static gchar *
 clean_entry_value (const gchar *input_str)
 {
@@ -421,9 +348,8 @@ clean_entry_value (const gchar *input_str)
     gchar *trimmed = g_strstrip (g_strdup (input_str));
     gchar *bracket = strchr (trimmed, ' ');
     if (bracket)
-    {
         *bracket = '\0';
-    }
+
     return trimmed;
 }
 
@@ -459,45 +385,6 @@ create_searchable_dropdown (GtkStringList *model)
     gtk_drop_down_set_enable_search (GTK_DROP_DOWN (dropdown), TRUE);
     gtk_widget_set_hexpand (dropdown, TRUE);
     return dropdown;
-}
-
-/* -------------------------------------------------------------------------- */
-/* Switch between Compact and Full list                                       */
-/* -------------------------------------------------------------------------- */
-
-static void
-on_show_all_toggled (GtkCheckButton *btn, gpointer user_data)
-{
-    PermissionsDialogWidgets *w = (PermissionsDialogWidgets *) user_data;
-    gboolean show_all = gtk_check_button_get_active (btn);
-
-    if (show_all)
-    {
-        /* Sync selection from compact to full */
-        guint u_idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (w->combo_owner_compact));
-        const gchar *u_str = gtk_string_list_get_string (w->owners_compact_model, u_idx);
-        select_in_string_list (w->combo_owner_full, w->owners_full_model, u_str);
-
-        guint g_idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (w->combo_group_compact));
-        const gchar *g_str = gtk_string_list_get_string (w->groups_compact_model, g_idx);
-        select_in_string_list (w->combo_group_full, w->groups_full_model, g_str);
-    }
-    else
-    {
-        /* Sync selection from full to compact */
-        guint u_idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (w->combo_owner_full));
-        const gchar *u_str = gtk_string_list_get_string (w->owners_full_model, u_idx);
-        select_in_string_list (w->combo_owner_compact, w->owners_compact_model, u_str);
-
-        guint g_idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (w->combo_group_full));
-        const gchar *g_str = gtk_string_list_get_string (w->groups_full_model, g_idx);
-        select_in_string_list (w->combo_group_compact, w->groups_compact_model, g_str);
-    }
-
-    gtk_widget_set_visible (w->combo_owner_compact, !show_all);
-    gtk_widget_set_visible (w->combo_owner_full, show_all);
-    gtk_widget_set_visible (w->combo_group_compact, !show_all);
-    gtk_widget_set_visible (w->combo_group_full, show_all);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -575,18 +462,13 @@ on_apply_clicked (GtkButton *btn, gpointer user_data)
 
     gboolean add_x = gtk_check_button_get_active (GTK_CHECK_BUTTON (w->chk_add_x));
     gboolean recursive = gtk_check_button_get_active (GTK_CHECK_BUTTON (w->chk_recursive));
-    gboolean show_all = gtk_check_button_get_active (GTK_CHECK_BUTTON (w->chk_show_all));
 
-    GtkWidget *active_owner_combo = show_all ? w->combo_owner_full : w->combo_owner_compact;
-    GtkStringList *active_u_model = show_all ? w->owners_full_model : w->owners_compact_model;
-    guint owner_idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (active_owner_combo));
-    const gchar *raw_owner = gtk_string_list_get_string (active_u_model, owner_idx);
+    guint owner_idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (w->combo_owner));
+    const gchar *raw_owner = gtk_string_list_get_string (w->owners_model, owner_idx);
     g_autofree gchar *owner_name = clean_entry_value (raw_owner);
 
-    GtkWidget *active_group_combo = show_all ? w->combo_group_full : w->combo_group_compact;
-    GtkStringList *active_g_model = show_all ? w->groups_full_model : w->groups_compact_model;
-    guint group_idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (active_group_combo));
-    const gchar *raw_group = gtk_string_list_get_string (active_g_model, group_idx);
+    guint group_idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (w->combo_group));
+    const gchar *raw_group = gtk_string_list_get_string (w->groups_model, group_idx);
     g_autofree gchar *group_name = clean_entry_value (raw_group);
 
     long file_mode = base_mode;
@@ -694,14 +576,34 @@ on_apply_clicked (GtkButton *btn, gpointer user_data)
 }
 
 static void
+on_cancel_clicked (GtkButton *btn, gpointer user_data)
+{
+    PermissionsDialogWidgets *w = (PermissionsDialogWidgets *) user_data;
+    log_debug ("[UI] Cancel clicked, destroying window");
+    gtk_window_destroy (GTK_WINDOW (w->window));
+}
+
+static void
 on_dialog_destroyed (gpointer data, GObject *where_the_object_was)
 {
+    log_debug ("[DESTROY] on_dialog_destroyed started");
     PermissionsDialogWidgets *w = (PermissionsDialogWidgets *) data;
     g_active_dialog_window = NULL;
 
-    g_list_free_full (w->target_paths, g_free);
-    mount_info_free (w->mount_info);
-    g_free (w);
+    if (w)
+    {
+        log_debug ("[DESTROY] freeing target_paths");
+        g_list_free_full (w->target_paths, g_free);
+
+        log_debug ("[DESTROY] freeing mount_info");
+        mount_info_free (w->mount_info);
+
+        /* Do NOT call g_clear_object for models here: GTK handles them on widget dispose */
+
+        log_debug ("[DESTROY] freeing struct w");
+        g_free (w);
+    }
+    log_debug ("[DESTROY] on_dialog_destroyed finished");
 }
 
 /* -------------------------------------------------------------------------- */
@@ -712,48 +614,36 @@ static void
 populate_models_from_parsed_data (PermissionsDialogWidgets *w,
                                   const gchar *passwd_part,
                                   const gchar *group_part,
-                                  const gchar *shells_part,
                                   const gchar *initial_owner,
                                   const gchar *initial_group)
 {
-    GHashTable *seen_u_c = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
-    GHashTable *seen_u_f = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
-    GHashTable *seen_g_c = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
-    GHashTable *seen_g_f = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+    GHashTable *seen_u = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+    GHashTable *seen_g = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
 
     #define ADD_U(model, seen, name, uid) do { \
-        if (name && strlen(name) > 0 && !g_hash_table_contains(seen, name)) { \
+        if ((name) && strlen(name) > 0 && !g_hash_table_contains(seen, (name))) { \
             g_hash_table_add(seen, g_strdup(name)); \
-            g_autofree gchar *entry_str = g_strdup_printf("%s [%s]", name, uid); \
+            g_autofree gchar *entry_str = g_strdup_printf("%s [%s]", (name), (uid)); \
             gtk_string_list_append(model, entry_str); \
         } \
     } while (0)
 
     #define ADD_G(model, seen, name, gid) do { \
-        if (name && strlen(name) > 0 && !g_hash_table_contains(seen, name)) { \
+        if ((name) && strlen(name) > 0 && !g_hash_table_contains(seen, (name))) { \
             g_hash_table_add(seen, g_strdup(name)); \
-            g_autofree gchar *entry_str = g_strdup_printf("%s [%s]", name, gid); \
+            g_autofree gchar *entry_str = g_strdup_printf("%s [%s]", (name), (gid)); \
             gtk_string_list_append(model, entry_str); \
         } \
     } while (0)
 
-    ADD_U (w->owners_compact_model, seen_u_c, "root", "0");
-    ADD_U (w->owners_full_model, seen_u_f, "root", "0");
-    ADD_G (w->groups_compact_model, seen_g_c, "root", "0");
-    ADD_G (w->groups_full_model, seen_g_f, "root", "0");
+    ADD_U (w->owners_model, seen_u, "root", "0");
+    ADD_G (w->groups_model, seen_g, "root", "0");
 
     if (initial_owner && strlen (initial_owner) > 0)
-    {
-        ADD_U (w->owners_compact_model, seen_u_c, initial_owner, "current");
-        ADD_U (w->owners_full_model, seen_u_f, initial_owner, "current");
-    }
-    if (initial_group && strlen (initial_group) > 0)
-    {
-        ADD_G (w->groups_compact_model, seen_g_c, initial_group, "current");
-        ADD_G (w->groups_full_model, seen_g_f, initial_group, "current");
-    }
+        ADD_U (w->owners_model, seen_u, initial_owner, "current");
 
-    GHashTable *valid_shells = get_valid_shells_set (shells_part);
+    if (initial_group && strlen (initial_group) > 0)
+        ADD_G (w->groups_model, seen_g, initial_group, "current");
 
     if (passwd_part)
     {
@@ -762,22 +652,12 @@ populate_models_from_parsed_data (PermissionsDialogWidgets *w,
         {
             gchar *line = lines[i];
             if (strlen (line) == 0) continue;
-            gchar **parts = g_strsplit (line, ":", 7);
-            if (parts[0] && parts[2] && parts[6])
+            gchar **parts = g_strsplit (line, ":", 4);
+            if (parts[0] && parts[1] && parts[2])
             {
                 const gchar *u_name = parts[0];
                 const gchar *u_uid = parts[2];
-                const gchar *u_shell = parts[6];
-
-                gboolean has_shell = g_hash_table_contains (valid_shells, u_shell);
-                gboolean is_whitelist = is_whitelisted_service_name (u_name);
-                gboolean is_host_user = (w->mount_info->ssh_host && g_strcmp0 (u_name, w->mount_info->ssh_host) == 0);
-
-                ADD_U (w->owners_full_model, seen_u_f, u_name, u_uid);
-                if (has_shell || is_whitelist || is_host_user)
-                {
-                    ADD_U (w->owners_compact_model, seen_u_c, u_name, u_uid);
-                }
+                ADD_U (w->owners_model, seen_u, u_name, u_uid);
             }
             g_strfreev (parts);
         }
@@ -792,19 +672,11 @@ populate_models_from_parsed_data (PermissionsDialogWidgets *w,
             gchar *line = lines[i];
             if (strlen (line) == 0) continue;
             gchar **parts = g_strsplit (line, ":", 4);
-            if (parts[0] && parts[2])
+            if (parts[0] && parts[1] && parts[2])
             {
                 const gchar *g_name = parts[0];
                 const gchar *g_gid = parts[2];
-
-                gboolean is_whitelist = is_whitelisted_service_name (g_name);
-                gboolean is_user_match = g_hash_table_contains (seen_u_c, g_name);
-
-                ADD_G (w->groups_full_model, seen_g_f, g_name, g_gid);
-                if (is_whitelist || is_user_match)
-                {
-                    ADD_G (w->groups_compact_model, seen_g_c, g_name, g_gid);
-                }
+                ADD_G (w->groups_model, seen_g, g_name, g_gid);
             }
             g_strfreev (parts);
         }
@@ -819,10 +691,7 @@ populate_models_from_parsed_data (PermissionsDialogWidgets *w,
         {
             const gchar *extra = config->extra_users[i];
             if (strlen (extra) > 0)
-            {
-                ADD_U (w->owners_compact_model, seen_u_c, extra, "custom");
-                ADD_U (w->owners_full_model, seen_u_f, extra, "custom");
-            }
+                ADD_U (w->owners_model, seen_u, extra, "custom");
         }
     }
     if (config && config->extra_groups)
@@ -831,25 +700,19 @@ populate_models_from_parsed_data (PermissionsDialogWidgets *w,
         {
             const gchar *extra = config->extra_groups[i];
             if (strlen (extra) > 0)
-            {
-                ADD_G (w->groups_compact_model, seen_g_c, extra, "custom");
-                ADD_G (w->groups_full_model, seen_g_f, extra, "custom");
-            }
+                ADD_G (w->groups_model, seen_g, extra, "custom");
         }
     }
     tweaks_config_free (config);
 
     #undef ADD_U
     #undef ADD_G
-    g_hash_table_destroy (valid_shells);
-    g_hash_table_destroy (seen_u_c);
-    g_hash_table_destroy (seen_u_f);
-    g_hash_table_destroy (seen_g_c);
-    g_hash_table_destroy (seen_g_f);
+    g_hash_table_destroy (seen_u);
+    g_hash_table_destroy (seen_g);
 
     /* Select active user and group */
-    select_in_string_list (w->combo_owner_compact, w->owners_compact_model, initial_owner ? initial_owner : "root");
-    select_in_string_list (w->combo_group_compact, w->groups_compact_model, initial_group ? initial_group : "root");
+    select_in_string_list (w->combo_owner, w->owners_model, initial_owner ? initial_owner : "root");
+    select_in_string_list (w->combo_group, w->groups_model, initial_group ? initial_group : "root");
 
     /* Stop spinner and display form */
     gtk_spinner_stop (GTK_SPINNER (w->spinner));
@@ -872,11 +735,9 @@ on_remote_load_finished (GObject *source_object, GAsyncResult *res, gpointer use
 
     gchar *passwd_part = NULL;
     gchar *group_part = NULL;
-    gchar *shells_part = NULL;
 
     if (!err && g_subprocess_get_successful (proc) && stdout_buf)
     {
-        /* Parse sections */
         gchar **sections = g_strsplit (stdout_buf, "===PASSWD===\n", 2);
         gchar *stat_part = sections[0];
         gchar *rest = sections[1];
@@ -895,26 +756,25 @@ on_remote_load_finished (GObject *source_object, GAsyncResult *res, gpointer use
             g_strfreev (stat_tokens);
         }
 
+        gchar **g_split = NULL;
         if (rest)
         {
-            gchar **g_split = g_strsplit (rest, "===GROUPS===\n", 2);
+            g_split = g_strsplit (rest, "===GROUPS===\n", 2);
             passwd_part = g_split[0];
-            if (g_split[1])
-            {
-                gchar **s_split = g_strsplit (g_split[1], "===SHELLS===\n", 2);
-                group_part = s_split[0];
-                shells_part = s_split[1];
-            }
+            group_part = g_split[1];
         }
 
         apply_mode_to_checkboxes (w, initial_mode);
-        populate_models_from_parsed_data (w, passwd_part, group_part, shells_part, initial_owner, initial_group);
+        populate_models_from_parsed_data (w, passwd_part, group_part, initial_owner, initial_group);
+
+        if (g_split)
+            g_strfreev (g_split);
         g_strfreev (sections);
     }
     else
     {
         log_debug ("[REMOTE LOAD FAILED] %s", err ? err->message : "unknown error");
-        populate_models_from_parsed_data (w, NULL, NULL, NULL, "root", "root");
+        populate_models_from_parsed_data (w, NULL, NULL, "root", "root");
     }
 }
 
@@ -934,7 +794,7 @@ start_async_data_load (PermissionsDialogWidgets *w, const gchar *first_path)
         );
 
         g_autofree gchar *remote_cmd = g_strdup_printf (
-            "stat -c '%%u:%%g:%%a:%%U:%%G' %s 2>/dev/null; echo '===PASSWD==='; getent passwd; echo '===GROUPS==='; getent group; echo '===SHELLS==='; cat /etc/shells 2>/dev/null",
+            "stat -c '%%u:%%g:%%a:%%U:%%G' %s 2>/dev/null; echo '===PASSWD==='; getent passwd; echo '===GROUPS==='; getent group",
             quoted_rem
         );
 
@@ -978,7 +838,7 @@ start_async_data_load (PermissionsDialogWidgets *w, const gchar *first_path)
     g_spawn_command_line_sync ("getent passwd", &passwd_out, NULL, NULL, NULL);
     g_spawn_command_line_sync ("getent group", &group_out, NULL, NULL, NULL);
 
-    populate_models_from_parsed_data (w, passwd_out, group_out, NULL, initial_owner, initial_group);
+    populate_models_from_parsed_data (w, passwd_out, group_out, initial_owner, initial_group);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1014,10 +874,8 @@ create_permissions_window (GList *files)
     else
         w->mount_info = g_new0 (MountInfo, 1);
 
-    w->owners_compact_model = gtk_string_list_new (NULL);
-    w->owners_full_model    = gtk_string_list_new (NULL);
-    w->groups_compact_model = gtk_string_list_new (NULL);
-    w->groups_full_model    = gtk_string_list_new (NULL);
+    w->owners_model = gtk_string_list_new (NULL);
+    w->groups_model = gtk_string_list_new (NULL);
 
     w->window = gtk_window_new ();
     gtk_window_set_title (GTK_WINDOW (w->window), _("Permissions"));
@@ -1071,11 +929,12 @@ create_permissions_window (GList *files)
         if (w->mount_info->mode == FS_MODE_SSHFS && w->mount_info->ssh_host)
         {
             g_autofree gchar *rem = translate_to_remote_path (first_path, w->mount_info);
-            target_label_text = g_strdup_printf (_("Target (SSH: %s): %s"), w->mount_info->ssh_host, rem);
+            target_label_text = g_strdup_printf (_("Remote: %s"), rem);
         }
         else
         {
-            target_label_text = g_strdup_printf (_("Target: %s"), first_path);
+            g_autofree gchar *disp_path = format_path_for_display (first_path);
+            target_label_text = g_strdup_printf (_("Target: %s"), disp_path);
         }
     }
     else
@@ -1089,7 +948,7 @@ create_permissions_window (GList *files)
     gtk_widget_add_css_class (w->lbl_target_path, "dim-label");
     gtk_box_append (GTK_BOX (form_box), w->lbl_target_path);
 
-    /* 1. Owner / Group (Two independent searchable dropdowns) */
+    /* 1. Owner / Group (Single searchable dropdowns) */
     GtkWidget *grid_top = gtk_grid_new ();
     gtk_grid_set_column_spacing (GTK_GRID (grid_top), 12);
     gtk_grid_set_row_spacing (GTK_GRID (grid_top), 8);
@@ -1098,40 +957,23 @@ create_permissions_window (GList *files)
     gtk_widget_set_halign (lbl_owner, GTK_ALIGN_START);
     gtk_grid_attach (GTK_GRID (grid_top), lbl_owner, 0, 0, 1, 1);
 
-    w->combo_owner_compact = create_searchable_dropdown (w->owners_compact_model);
-    w->combo_owner_full    = create_searchable_dropdown (w->owners_full_model);
-    gtk_widget_set_visible (w->combo_owner_full, FALSE);
-    gtk_grid_attach (GTK_GRID (grid_top), w->combo_owner_compact, 1, 0, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_top), w->combo_owner_full, 1, 0, 1, 1);
+    w->combo_owner = create_searchable_dropdown (w->owners_model);
+    gtk_grid_attach (GTK_GRID (grid_top), w->combo_owner, 1, 0, 1, 1);
 
     GtkWidget *lbl_group = gtk_label_new (_("Group:"));
     gtk_widget_set_halign (lbl_group, GTK_ALIGN_START);
     gtk_grid_attach (GTK_GRID (grid_top), lbl_group, 0, 1, 1, 1);
 
-    w->combo_group_compact = create_searchable_dropdown (w->groups_compact_model);
-    w->combo_group_full    = create_searchable_dropdown (w->groups_full_model);
-    gtk_widget_set_visible (w->combo_group_full, FALSE);
-    gtk_grid_attach (GTK_GRID (grid_top), w->combo_group_compact, 1, 1, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_top), w->combo_group_full, 1, 1, 1, 1);
+    w->combo_group = create_searchable_dropdown (w->groups_model);
+    gtk_grid_attach (GTK_GRID (grid_top), w->combo_group, 1, 1, 1, 1);
 
     gtk_box_append (GTK_BOX (form_box), grid_top);
-
-    /* "Show all" checkbox */
-    w->chk_show_all = gtk_check_button_new_with_label (_("Show all users and groups"));
-    g_signal_connect (w->chk_show_all, "toggled", G_CALLBACK (on_show_all_toggled), w);
-    gtk_box_append (GTK_BOX (form_box), w->chk_show_all);
-
     gtk_box_append (GTK_BOX (form_box), gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
 
     /* 2. Permissions block */
     GtkWidget *grid_perm = gtk_grid_new ();
     gtk_grid_set_column_spacing (GTK_GRID (grid_perm), 12);
     gtk_grid_set_row_spacing (GTK_GRID (grid_perm), 6);
-
-    GtkWidget *lbl_perm_title = gtk_label_new (_("Permissions:"));
-    gtk_widget_set_halign (lbl_perm_title, GTK_ALIGN_START);
-    gtk_widget_set_valign (lbl_perm_title, GTK_ALIGN_START);
-    gtk_grid_attach (GTK_GRID (grid_perm), lbl_perm_title, 0, 0, 1, 5);
 
     GtkWidget *lbl_u = gtk_label_new_with_mnemonic (_("_Owner"));
     GtkWidget *lbl_g = gtk_label_new_with_mnemonic (_("_Group"));
@@ -1142,49 +984,50 @@ create_permissions_window (GList *files)
     gtk_widget_set_halign (lbl_o, GTK_ALIGN_START);
     gtk_widget_set_halign (lbl_octal, GTK_ALIGN_START);
 
-    gtk_grid_attach (GTK_GRID (grid_perm), lbl_u, 1, 0, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), lbl_g, 1, 1, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), lbl_o, 1, 2, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), lbl_octal, 1, 3, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), lbl_u, 0, 0, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), lbl_g, 0, 1, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), lbl_o, 0, 2, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), lbl_octal, 0, 3, 1, 1);
 
     /* Owner checkboxes */
     w->chk_u_r    = gtk_check_button_new_with_label ("R");
     w->chk_u_w    = gtk_check_button_new_with_label ("W");
     w->chk_u_x    = gtk_check_button_new_with_label ("X");
     w->chk_u_suid = gtk_check_button_new_with_label (_("Set UID"));
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_u_r,    2, 0, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_u_w,    3, 0, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_u_x,    4, 0, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_u_suid, 5, 0, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_u_r,    1, 0, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_u_w,    2, 0, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_u_x,    3, 0, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_u_suid, 4, 0, 1, 1);
 
     /* Group checkboxes */
     w->chk_g_r    = gtk_check_button_new_with_label ("R");
     w->chk_g_w    = gtk_check_button_new_with_label ("W");
     w->chk_g_x    = gtk_check_button_new_with_label ("X");
     w->chk_g_sgid = gtk_check_button_new_with_label (_("Set GID"));
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_g_r,    2, 1, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_g_w,    3, 1, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_g_x,    4, 1, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_g_sgid, 5, 1, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_g_r,    1, 1, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_g_w,    2, 1, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_g_x,    3, 1, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_g_sgid, 4, 1, 1, 1);
 
     /* Others checkboxes */
     w->chk_o_r      = gtk_check_button_new_with_label ("R");
     w->chk_o_w      = gtk_check_button_new_with_label ("W");
     w->chk_o_x      = gtk_check_button_new_with_label ("X");
     w->chk_o_sticky = gtk_check_button_new_with_label (_("Sticky bit"));
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_r,      2, 2, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_w,      3, 2, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_x,      4, 2, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_sticky, 5, 2, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_r,      1, 2, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_w,      2, 2, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_x,      3, 2, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_sticky, 4, 2, 1, 1);
 
     /* Octal */
     w->entry_octal = gtk_entry_new ();
     gtk_entry_set_max_length (GTK_ENTRY (w->entry_octal), 5);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->entry_octal, 2, 3, 2, 1);
+    gtk_label_set_mnemonic_widget (GTK_LABEL (lbl_octal), w->entry_octal);
+    gtk_grid_attach (GTK_GRID (grid_perm), w->entry_octal, 1, 3, 2, 1);
 
-    /* Add X to directories */
+    /* Add X to directories (left-aligned across columns) */
     w->chk_add_x = gtk_check_button_new_with_mnemonic (_("Add _X to directories"));
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_add_x, 2, 4, 4, 1);
+    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_add_x, 0, 4, 5, 1);
 
     gtk_box_append (GTK_BOX (form_box), grid_perm);
     gtk_box_append (GTK_BOX (form_box), gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
@@ -1202,7 +1045,7 @@ create_permissions_window (GList *files)
     GtkWidget *btn_apply  = gtk_button_new_with_label (_("Apply"));
     gtk_widget_add_css_class (btn_apply, "suggested-action");
 
-    g_signal_connect_swapped (btn_cancel, "clicked", G_CALLBACK (gtk_window_destroy), w->window);
+    g_signal_connect (btn_cancel, "clicked", G_CALLBACK (on_cancel_clicked), w);
     g_signal_connect (btn_apply, "clicked", G_CALLBACK (on_apply_clicked), w);
 
     gtk_box_append (GTK_BOX (btn_box), btn_cancel);

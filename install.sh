@@ -13,7 +13,21 @@ REAL_USER="${SUDO_USER:-$USER}"
 
 # 1. Quit Nautilus on behalf of the real user to unload old modules
 if [[ -n "$REAL_USER" && "$REAL_USER" != "root" ]]; then
-    su - "$REAL_USER" -c "nautilus -q" 2>/dev/null || true
+    REAL_UID=$(id -u "$REAL_USER" 2>/dev/null)
+    if [[ -n "$REAL_UID" && -d "/run/user/$REAL_UID" ]]; then
+        # Graceful quit via user's D-Bus session
+        runuser -u "$REAL_USER" -- env \
+            XDG_RUNTIME_DIR="/run/user/$REAL_UID" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$REAL_UID/bus" \
+            nautilus -q 2>/dev/null || true
+    fi
+
+    # Fallback to force-terminate if still lingering
+    if command -v killall >/dev/null 2>&1; then
+        killall -u "$REAL_USER" -q nautilus 2>/dev/null || true
+    else
+        pkill -u "$REAL_USER" -x nautilus 2>/dev/null || true
+    fi
 fi
 
 # 2. Clean up old build artifacts and installed modules
@@ -165,7 +179,7 @@ for ((i=0; i<TOTAL; i++)); do
         OUT_LIB="libnautilus-tweaks-${mod_id}.so"
 
         echo -e "  [+] Compiling \e[1m$mod_src\e[0m -> $OUT_LIB"
-        gcc $CFLAGS "$mod_src" tweaks-config.c -o "$OUT_LIB" $LDFLAGS
+        gcc $CFLAGS "$mod_src" tweaks-config.c tweaks-log.c -o "$OUT_LIB" $LDFLAGS
 
         install -m 755 "$OUT_LIB" "$EXTENSIONS_DIR"/
         echo -e "      \e[32mInstalled to $EXTENSIONS_DIR/$OUT_LIB\e[0m"

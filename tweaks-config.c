@@ -44,7 +44,9 @@ ensure_default_config_exists (const gchar *config_path)
         "# Additional users for permissions menu, comma-separated (e.g., customuser, 1005)\n"
         "extra_users = \n\n"
         "# Additional groups for permissions menu, comma-separated (e.g., mygroup, 950)\n"
-        "extra_groups = \n";
+        "extra_groups = \n\n"
+        "# Enable debug logging to ~/.config/nautilus-tweaks/debug.log (true / false)\n"
+        "debug = false\n";
 
     g_file_set_contents (config_path, default_content, -1, NULL);
 }
@@ -64,6 +66,7 @@ tweaks_config_load (void)
     config->remote_dirs      = g_strsplit ("/mnt/Remote", ",", -1);
     config->extra_users      = g_strsplit ("", ",", -1);
     config->extra_groups     = g_strsplit ("", ",", -1);
+    config->debug            = FALSE;
 
     const gchar *config_dir = g_get_user_config_dir ();
     g_autofree gchar *config_path = g_build_filename (config_dir, "nautilus-tweaks", "config.ini", NULL);
@@ -158,6 +161,11 @@ tweaks_config_load (void)
         {
             g_free (eg);
         }
+
+        gboolean dbg = g_key_file_get_boolean (keyfile, "General", "debug", &err);
+        if (!err)
+            config->debug = dbg;
+        g_clear_error (&err);
     }
 
     return config;

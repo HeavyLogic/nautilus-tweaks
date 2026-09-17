@@ -126,9 +126,6 @@ msgstr "Загрузка пользователей и прав с сервер�
 msgid "Reading permissions..."
 msgstr "Чтение прав доступа..."
 
-msgid "Target (SSH: %s): %s"
-msgstr "Цель (SSH: %s): %s"
-
 msgid "Target: %s"
 msgstr "Цель: %s"
 
@@ -141,11 +138,8 @@ msgstr "Владелец:"
 msgid "Group:"
 msgstr "Группа:"
 
-msgid "Show all users and groups"
-msgstr "Показать всех пользователей и группы"
-
-msgid "Permissions:"
-msgstr "Права:"
+msgid "Remote: %s"
+msgstr "Удалённо: %s"
 
 msgid "_Owner"
 msgstr "_Владелец"

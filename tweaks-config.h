@@ -24,6 +24,9 @@ typedef struct {
     /* Permission settings */
     gchar   **extra_users;
     gchar   **extra_groups;
+
+    /* Debug settings */
+    gboolean  debug;
 } TweaksConfig;
 
 void          tweaks_i18n_init   (void);
