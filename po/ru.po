@@ -141,14 +141,14 @@ msgstr "Группа:"
 msgid "Remote: %s"
 msgstr "Удалённо: %s"
 
-msgid "_Owner"
-msgstr "_Владелец"
+msgid "_Owner:"
+msgstr "_Владелец:"
 
-msgid "_Group"
-msgstr "_Группа"
+msgid "_Group:"
+msgstr "_Группа:"
 
-msgid "Ot_hers"
-msgstr "Д_ругие"
+msgid "Ot_hers:"
+msgstr "_Остальные:"
 
 msgid "O_ctal:"
 msgstr "_Octal:"
@@ -179,3 +179,6 @@ msgstr "Изменить владельца, группу и права дост
 
 msgid "Change owner, group and permissions of current folder (chmod/chown)"
 msgstr "Изменить владельца, группу и права доступа текущей папки (chmod/chown)"
+
+msgid "_Symbolic:"
+msgstr "_Символьный:"

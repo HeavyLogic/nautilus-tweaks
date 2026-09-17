@@ -9,8 +9,8 @@
 #include <sys/stat.h>
 #include <errno.h>
 
-#include "tweaks-log.h"
 #include "tweaks-config.h"
+#include "tweaks-log.h"
 
 static guint g_permissions_action_counter = 0;
 static GtkWidget *g_active_dialog_window = NULL;
@@ -189,8 +189,9 @@ typedef struct {
     GtkWidget *chk_o_x;
     GtkWidget *chk_o_sticky;
 
-    /* Octal entry and extra options */
+    /* Octal & Symbolic entries and extra options */
     GtkWidget *entry_octal;
+    GtkWidget *entry_symbolic;
     GtkWidget *chk_add_x;
     GtkWidget *chk_recursive;
 
@@ -245,11 +246,94 @@ reload_nautilus_views (void)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Live sync between Octal and Checkboxes                                     */
+/* Symbolic mode helpers                                                      */
 /* -------------------------------------------------------------------------- */
 
 static void
-update_octal_from_checkboxes (PermissionsDialogWidgets *w)
+format_symbolic_mode (guint mode, char *buf, gsize buf_size)
+{
+    if (buf_size < 10)
+        return;
+
+    /* User */
+    buf[0] = (mode & 0400) ? 'r' : '-';
+    buf[1] = (mode & 0200) ? 'w' : '-';
+    if (mode & 04000)
+        buf[2] = (mode & 0100) ? 's' : 'S';
+    else
+        buf[2] = (mode & 0100) ? 'x' : '-';
+
+    /* Group */
+    buf[3] = (mode & 0040) ? 'r' : '-';
+    buf[4] = (mode & 0020) ? 'w' : '-';
+    if (mode & 02000)
+        buf[5] = (mode & 0010) ? 's' : 'S';
+    else
+        buf[5] = (mode & 0010) ? 'x' : '-';
+
+    /* Others */
+    buf[6] = (mode & 0004) ? 'r' : '-';
+    buf[7] = (mode & 0002) ? 'w' : '-';
+    if (mode & 01000)
+        buf[8] = (mode & 0001) ? 't' : 'T';
+    else
+        buf[8] = (mode & 0001) ? 'x' : '-';
+
+    buf[9] = '\0';
+}
+
+static gboolean
+parse_symbolic_mode (const char *str, guint *out_mode)
+{
+    if (!str)
+        return FALSE;
+
+    const char *p = str;
+    /* Allow 10 chars if user copied with file type indicator (e.g., drwxr-xr-x or -rw-r--r--) */
+    if (strlen (p) == 10)
+        p++;
+
+    if (strlen (p) != 9)
+        return FALSE;
+
+    guint mode = 0;
+
+    /* User */
+    if (p[0] == 'r') mode |= 0400; else if (p[0] != '-') return FALSE;
+    if (p[1] == 'w') mode |= 0200; else if (p[1] != '-') return FALSE;
+    if (p[2] == 'x') mode |= 0100;
+    else if (p[2] == 's') mode |= 04100;
+    else if (p[2] == 'S') mode |= 04000;
+    else if (p[2] != '-') return FALSE;
+
+    /* Group */
+    if (p[3] == 'r') mode |= 0040; else if (p[3] != '-') return FALSE;
+    if (p[4] == 'w') mode |= 0020; else if (p[4] != '-') return FALSE;
+    if (p[5] == 'x') mode |= 0010;
+    else if (p[5] == 's') mode |= 02010;
+    else if (p[5] == 'S') mode |= 02000;
+    else if (p[5] != '-') return FALSE;
+
+    /* Others */
+    if (p[6] == 'r') mode |= 0004; else if (p[6] != '-') return FALSE;
+    if (p[7] == 'w') mode |= 0002; else if (p[7] != '-') return FALSE;
+    if (p[8] == 'x') mode |= 0001;
+    else if (p[8] == 't') mode |= 01001;
+    else if (p[8] == 'T') mode |= 01000;
+    else if (p[8] != '-') return FALSE;
+
+    if (out_mode)
+        *out_mode = mode;
+
+    return TRUE;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Live sync between Checkboxes, Octal and Symbolic                           */
+/* -------------------------------------------------------------------------- */
+
+static void
+sync_entries_from_checkboxes (PermissionsDialogWidgets *w)
 {
     if (w->updating_from_code)
         return;
@@ -278,6 +362,10 @@ update_octal_from_checkboxes (PermissionsDialogWidgets *w)
     snprintf (octal_str, sizeof (octal_str), "%04o", mode);
     gtk_editable_set_text (GTK_EDITABLE (w->entry_octal), octal_str);
 
+    char sym_str[16];
+    format_symbolic_mode (mode, sym_str, sizeof (sym_str));
+    gtk_editable_set_text (GTK_EDITABLE (w->entry_symbolic), sym_str);
+
     w->updating_from_code = FALSE;
 }
 
@@ -285,11 +373,11 @@ static void
 on_perm_checkbox_toggled (GtkCheckButton *btn, gpointer user_data)
 {
     PermissionsDialogWidgets *w = (PermissionsDialogWidgets *) user_data;
-    update_octal_from_checkboxes (w);
+    sync_entries_from_checkboxes (w);
 }
 
 static void
-apply_mode_to_checkboxes (PermissionsDialogWidgets *w, long mode)
+apply_mode_to_all_controls (PermissionsDialogWidgets *w, long mode)
 {
     w->updating_from_code = TRUE;
 
@@ -313,6 +401,10 @@ apply_mode_to_checkboxes (PermissionsDialogWidgets *w, long mode)
     snprintf (octal_str, sizeof (octal_str), "%04lo", mode);
     gtk_editable_set_text (GTK_EDITABLE (w->entry_octal), octal_str);
 
+    char sym_str[16];
+    format_symbolic_mode ((guint) mode, sym_str, sizeof (sym_str));
+    gtk_editable_set_text (GTK_EDITABLE (w->entry_symbolic), sym_str);
+
     w->updating_from_code = FALSE;
 }
 
@@ -332,7 +424,25 @@ on_octal_entry_changed (GtkEditable *editable, gpointer user_data)
     if (*endptr != '\0' || mode < 0 || mode > 07777)
         return;
 
-    apply_mode_to_checkboxes (w, mode);
+    apply_mode_to_all_controls (w, mode);
+}
+
+static void
+on_symbolic_entry_changed (GtkEditable *editable, gpointer user_data)
+{
+    PermissionsDialogWidgets *w = (PermissionsDialogWidgets *) user_data;
+    if (w->updating_from_code)
+        return;
+
+    const char *text = gtk_editable_get_text (editable);
+    if (strlen (text) == 0)
+        return;
+
+    guint mode = 0;
+    if (!parse_symbolic_mode (text, &mode))
+        return;
+
+    apply_mode_to_all_controls (w, mode);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -579,31 +689,21 @@ static void
 on_cancel_clicked (GtkButton *btn, gpointer user_data)
 {
     PermissionsDialogWidgets *w = (PermissionsDialogWidgets *) user_data;
-    log_debug ("[UI] Cancel clicked, destroying window");
     gtk_window_destroy (GTK_WINDOW (w->window));
 }
 
 static void
 on_dialog_destroyed (gpointer data, GObject *where_the_object_was)
 {
-    log_debug ("[DESTROY] on_dialog_destroyed started");
     PermissionsDialogWidgets *w = (PermissionsDialogWidgets *) data;
     g_active_dialog_window = NULL;
 
     if (w)
     {
-        log_debug ("[DESTROY] freeing target_paths");
         g_list_free_full (w->target_paths, g_free);
-
-        log_debug ("[DESTROY] freeing mount_info");
         mount_info_free (w->mount_info);
-
-        /* Do NOT call g_clear_object for models here: GTK handles them on widget dispose */
-
-        log_debug ("[DESTROY] freeing struct w");
         g_free (w);
     }
-    log_debug ("[DESTROY] on_dialog_destroyed finished");
 }
 
 /* -------------------------------------------------------------------------- */
@@ -764,7 +864,7 @@ on_remote_load_finished (GObject *source_object, GAsyncResult *res, gpointer use
             group_part = g_split[1];
         }
 
-        apply_mode_to_checkboxes (w, initial_mode);
+        apply_mode_to_all_controls (w, initial_mode);
         populate_models_from_parsed_data (w, passwd_part, group_part, initial_owner, initial_group);
 
         if (g_split)
@@ -831,7 +931,7 @@ start_async_data_load (PermissionsDialogWidgets *w, const gchar *first_path)
         }
     }
 
-    apply_mode_to_checkboxes (w, initial_mode);
+    apply_mode_to_all_controls (w, initial_mode);
 
     g_autofree gchar *passwd_out = NULL;
     g_autofree gchar *group_out = NULL;
@@ -948,88 +1048,108 @@ create_permissions_window (GList *files)
     gtk_widget_add_css_class (w->lbl_target_path, "dim-label");
     gtk_box_append (GTK_BOX (form_box), w->lbl_target_path);
 
-    /* 1. Owner / Group (Single searchable dropdowns) */
-    GtkWidget *grid_top = gtk_grid_new ();
-    gtk_grid_set_column_spacing (GTK_GRID (grid_top), 12);
-    gtk_grid_set_row_spacing (GTK_GRID (grid_top), 8);
+    /* Main Grid for aligning all fields and labels perfectly */
+    GtkWidget *grid_form = gtk_grid_new ();
+    gtk_grid_set_column_spacing (GTK_GRID (grid_form), 18);
+    gtk_grid_set_row_spacing (GTK_GRID (grid_form), 8);
 
+    /* 1. Owner & Group */
     GtkWidget *lbl_owner = gtk_label_new (_("Owner:"));
     gtk_widget_set_halign (lbl_owner, GTK_ALIGN_START);
-    gtk_grid_attach (GTK_GRID (grid_top), lbl_owner, 0, 0, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_form), lbl_owner, 0, 0, 1, 1);
 
     w->combo_owner = create_searchable_dropdown (w->owners_model);
-    gtk_grid_attach (GTK_GRID (grid_top), w->combo_owner, 1, 0, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_form), w->combo_owner, 1, 0, 1, 1);
 
     GtkWidget *lbl_group = gtk_label_new (_("Group:"));
     gtk_widget_set_halign (lbl_group, GTK_ALIGN_START);
-    gtk_grid_attach (GTK_GRID (grid_top), lbl_group, 0, 1, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_form), lbl_group, 0, 1, 1, 1);
 
     w->combo_group = create_searchable_dropdown (w->groups_model);
-    gtk_grid_attach (GTK_GRID (grid_top), w->combo_group, 1, 1, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_form), w->combo_group, 1, 1, 1, 1);
 
-    gtk_box_append (GTK_BOX (form_box), grid_top);
-    gtk_box_append (GTK_BOX (form_box), gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
+    /* Separator between Owner/Group and Permissions */
+    GtkWidget *sep_middle = gtk_separator_new (GTK_ORIENTATION_HORIZONTAL);
+    gtk_widget_set_margin_top (sep_middle, 4);
+    gtk_widget_set_margin_bottom (sep_middle, 4);
+    gtk_grid_attach (GTK_GRID (grid_form), sep_middle, 0, 2, 2, 1);
 
     /* 2. Permissions block */
-    GtkWidget *grid_perm = gtk_grid_new ();
-    gtk_grid_set_column_spacing (GTK_GRID (grid_perm), 12);
-    gtk_grid_set_row_spacing (GTK_GRID (grid_perm), 6);
-
-    GtkWidget *lbl_u = gtk_label_new_with_mnemonic (_("_Owner"));
-    GtkWidget *lbl_g = gtk_label_new_with_mnemonic (_("_Group"));
-    GtkWidget *lbl_o = gtk_label_new_with_mnemonic (_("Ot_hers"));
+    GtkWidget *lbl_u = gtk_label_new_with_mnemonic (_("_Owner:"));
+    GtkWidget *lbl_g = gtk_label_new_with_mnemonic (_("_Group:"));
+    GtkWidget *lbl_o = gtk_label_new_with_mnemonic (_("Ot_hers:"));
     GtkWidget *lbl_octal = gtk_label_new_with_mnemonic (_("O_ctal:"));
+    GtkWidget *lbl_sym   = gtk_label_new_with_mnemonic (_("_Symbolic:"));
+
     gtk_widget_set_halign (lbl_u, GTK_ALIGN_START);
     gtk_widget_set_halign (lbl_g, GTK_ALIGN_START);
     gtk_widget_set_halign (lbl_o, GTK_ALIGN_START);
     gtk_widget_set_halign (lbl_octal, GTK_ALIGN_START);
+    gtk_widget_set_halign (lbl_sym, GTK_ALIGN_START);
 
-    gtk_grid_attach (GTK_GRID (grid_perm), lbl_u, 0, 0, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), lbl_g, 0, 1, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), lbl_o, 0, 2, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), lbl_octal, 0, 3, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_form), lbl_u, 0, 3, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_form), lbl_g, 0, 4, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_form), lbl_o, 0, 5, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_form), lbl_octal, 0, 6, 1, 1);
+    gtk_grid_attach (GTK_GRID (grid_form), lbl_sym, 0, 7, 1, 1);
 
-    /* Owner checkboxes */
+    /* Checkbox rows with equal and clean spacing (14px) */
+    GtkWidget *box_u = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 14);
     w->chk_u_r    = gtk_check_button_new_with_label ("R");
     w->chk_u_w    = gtk_check_button_new_with_label ("W");
     w->chk_u_x    = gtk_check_button_new_with_label ("X");
     w->chk_u_suid = gtk_check_button_new_with_label (_("Set UID"));
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_u_r,    1, 0, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_u_w,    2, 0, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_u_x,    3, 0, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_u_suid, 4, 0, 1, 1);
+    gtk_box_append (GTK_BOX (box_u), w->chk_u_r);
+    gtk_box_append (GTK_BOX (box_u), w->chk_u_w);
+    gtk_box_append (GTK_BOX (box_u), w->chk_u_x);
+    gtk_box_append (GTK_BOX (box_u), w->chk_u_suid);
+    gtk_grid_attach (GTK_GRID (grid_form), box_u, 1, 3, 1, 1);
 
-    /* Group checkboxes */
+    GtkWidget *box_g = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 14);
     w->chk_g_r    = gtk_check_button_new_with_label ("R");
     w->chk_g_w    = gtk_check_button_new_with_label ("W");
     w->chk_g_x    = gtk_check_button_new_with_label ("X");
     w->chk_g_sgid = gtk_check_button_new_with_label (_("Set GID"));
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_g_r,    1, 1, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_g_w,    2, 1, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_g_x,    3, 1, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_g_sgid, 4, 1, 1, 1);
+    gtk_box_append (GTK_BOX (box_g), w->chk_g_r);
+    gtk_box_append (GTK_BOX (box_g), w->chk_g_w);
+    gtk_box_append (GTK_BOX (box_g), w->chk_g_x);
+    gtk_box_append (GTK_BOX (box_g), w->chk_g_sgid);
+    gtk_grid_attach (GTK_GRID (grid_form), box_g, 1, 4, 1, 1);
 
-    /* Others checkboxes */
+    GtkWidget *box_o = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 14);
     w->chk_o_r      = gtk_check_button_new_with_label ("R");
     w->chk_o_w      = gtk_check_button_new_with_label ("W");
     w->chk_o_x      = gtk_check_button_new_with_label ("X");
     w->chk_o_sticky = gtk_check_button_new_with_label (_("Sticky bit"));
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_r,      1, 2, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_w,      2, 2, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_x,      3, 2, 1, 1);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_sticky, 4, 2, 1, 1);
+    gtk_box_append (GTK_BOX (box_o), w->chk_o_r);
+    gtk_box_append (GTK_BOX (box_o), w->chk_o_w);
+    gtk_box_append (GTK_BOX (box_o), w->chk_o_x);
+    gtk_box_append (GTK_BOX (box_o), w->chk_o_sticky);
+    gtk_grid_attach (GTK_GRID (grid_form), box_o, 1, 5, 1, 1);
 
-    /* Octal */
+    /* Octal entry */
     w->entry_octal = gtk_entry_new ();
     gtk_entry_set_max_length (GTK_ENTRY (w->entry_octal), 5);
+    gtk_widget_set_size_request (w->entry_octal, 110, -1);
+    gtk_widget_set_halign (w->entry_octal, GTK_ALIGN_START);
+    gtk_widget_add_css_class (w->entry_octal, "monospace");
     gtk_label_set_mnemonic_widget (GTK_LABEL (lbl_octal), w->entry_octal);
-    gtk_grid_attach (GTK_GRID (grid_perm), w->entry_octal, 1, 3, 2, 1);
+    gtk_grid_attach (GTK_GRID (grid_form), w->entry_octal, 1, 6, 1, 1);
 
-    /* Add X to directories (left-aligned across columns) */
+    /* Symbolic entry */
+    w->entry_symbolic = gtk_entry_new ();
+    gtk_entry_set_max_length (GTK_ENTRY (w->entry_symbolic), 10);
+    gtk_widget_set_size_request (w->entry_symbolic, 110, -1);
+    gtk_widget_set_halign (w->entry_symbolic, GTK_ALIGN_START);
+    gtk_widget_add_css_class (w->entry_symbolic, "monospace");
+    gtk_label_set_mnemonic_widget (GTK_LABEL (lbl_sym), w->entry_symbolic);
+    gtk_grid_attach (GTK_GRID (grid_form), w->entry_symbolic, 1, 7, 1, 1);
+
+    /* Add X to directories (starts at col 0, spans whole row) */
     w->chk_add_x = gtk_check_button_new_with_mnemonic (_("Add _X to directories"));
-    gtk_grid_attach (GTK_GRID (grid_perm), w->chk_add_x, 0, 4, 5, 1);
+    gtk_grid_attach (GTK_GRID (grid_form), w->chk_add_x, 0, 8, 2, 1);
 
-    gtk_box_append (GTK_BOX (form_box), grid_perm);
+    gtk_box_append (GTK_BOX (form_box), grid_form);
     gtk_box_append (GTK_BOX (form_box), gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
 
     /* 3. Recursive checkbox */
@@ -1064,6 +1184,7 @@ create_permissions_window (GList *files)
         g_signal_connect (all_checks[i], "toggled", G_CALLBACK (on_perm_checkbox_toggled), w);
 
     g_signal_connect (w->entry_octal, "changed", G_CALLBACK (on_octal_entry_changed), w);
+    g_signal_connect (w->entry_symbolic, "changed", G_CALLBACK (on_symbolic_entry_changed), w);
 
     /* Start background data fetch */
     start_async_data_load (w, first_path);
