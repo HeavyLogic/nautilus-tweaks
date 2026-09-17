@@ -4,9 +4,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdarg.h>
 
 #include "tweaks-config.h"
+#include "tweaks-log.h"
 
 /* Counter for generating unique menu item IDs */
 static guint g_mount_action_counter = 0;
@@ -73,35 +73,6 @@ G_DEFINE_DYNAMIC_TYPE_EXTENDED (NautilusTweaksMount, nautilus_tweaks_mount, G_TY
 static void nautilus_tweaks_mount_class_init (NautilusTweaksMountClass *klass) {}
 static void nautilus_tweaks_mount_init (NautilusTweaksMount *self) {}
 static void nautilus_tweaks_mount_class_finalize (NautilusTweaksMountClass *klass) {}
-
-/* -------------------------------------------------------------------------- */
-/* Logging to ~/.config/nautilus-tweaks/debug.log                             */
-/* -------------------------------------------------------------------------- */
-
-static void
-tweaks_log (const gchar *format, ...)
-{
-    const gchar *config_dir = g_get_user_config_dir ();
-    g_autofree gchar *log_dir = g_build_filename (config_dir, "nautilus-tweaks", NULL);
-    g_mkdir_with_parents (log_dir, 0755);
-
-    g_autofree gchar *log_path = g_build_filename (log_dir, "debug.log", NULL);
-    FILE *fp = fopen (log_path, "a");
-    if (!fp)
-        return;
-
-    g_autoptr (GDateTime) now = g_date_time_new_now_local ();
-    g_autofree gchar *time_str = now ? g_date_time_format (now, "%Y-%m-%d %H:%M:%S") : g_strdup ("---");
-
-    va_list args;
-    va_start (args, format);
-    g_autofree gchar *msg = g_strdup_vprintf (format, args);
-    va_end (args);
-
-    fprintf (fp, "[%s] %s\n", time_str, msg);
-    fflush (fp);
-    fclose (fp);
-}
 
 /* -------------------------------------------------------------------------- */
 /* Memory and window helper functions                                         */
@@ -460,18 +431,18 @@ on_mount_communicated (GObject *source_object, GAsyncResult *res, gpointer user_
     gint exit_code = g_subprocess_get_exit_status (proc);
     gboolean success = (!err && g_subprocess_get_successful (proc));
 
-    tweaks_log ("Command: %s", data->cmd_line);
-    tweaks_log ("Result: exit_code=%d, success=%s", exit_code, success ? "TRUE" : "FALSE");
+    log_debug ("Command: %s", data->cmd_line);
+    log_debug ("Result: exit_code=%d, success=%s", exit_code, success ? "TRUE" : "FALSE");
     if (err)
-        tweaks_log ("GError: %s", err->message);
+        log_debug ("GError: %s", err->message);
     if (stdout_buf && strlen (stdout_buf) > 0)
-        tweaks_log ("STDOUT:\n%s", stdout_buf);
+        log_debug ("STDOUT:\n%s", stdout_buf);
     if (stderr_buf && strlen (stderr_buf) > 0)
-        tweaks_log ("STDERR:\n%s", stderr_buf);
+        log_debug ("STDERR:\n%s", stderr_buf);
 
     if (success)
     {
-        tweaks_log ("Mount successful: %s -> %s", data->server_name, data->target_path);
+        log_debug ("Mount successful: %s -> %s", data->server_name, data->target_path);
         TweaksConfig *config = tweaks_config_load ();
         const gchar *emblem_name = (config->emblem && strlen (config->emblem) > 0) ? config->emblem : "globe";
         const gchar *emblems[] = { emblem_name, NULL };
@@ -503,7 +474,7 @@ on_mount_communicated (GObject *source_object, GAsyncResult *res, gpointer user_
             err_msg = g_strdup (_("Process exited with an error (non-zero exit code). See ~/.config/nautilus-tweaks/debug.log"));
         }
 
-        tweaks_log ("Mount error for %s: %s", data->server_name, err_msg);
+        log_debug ("Mount error for %s: %s", data->server_name, err_msg);
 
         const gchar *notify_argv[] = {
             "notify-send",
@@ -557,11 +528,11 @@ start_mount_server_rclone (RemoteServer *target_server, const gchar *target_path
 
     if (spawn_err)
     {
-        tweaks_log ("Error launching rclone: %s", spawn_err->message);
+        log_debug ("Error launching rclone: %s", spawn_err->message);
         return;
     }
 
-    tweaks_log ("Launching rclone: %s", cmd_desc);
+    log_debug ("Launching rclone: %s", cmd_desc);
 
     MountFinishData *mf_data = g_new0 (MountFinishData, 1);
     mf_data->target_path = g_strdup (target_path);
@@ -625,11 +596,11 @@ start_mount_server_sshfs (RemoteServer *target_server, const gchar *target_path,
 
     if (spawn_err)
     {
-        tweaks_log ("Error spawning sshfs: %s", spawn_err->message);
+        log_debug ("Error spawning sshfs: %s", spawn_err->message);
         return;
     }
 
-    tweaks_log ("Launching sshfs: %s (password provided: %s)", cmd_desc, (password && strlen (password) > 0) ? "YES" : "NO");
+    log_debug ("Launching sshfs: %s (password provided: %s)", cmd_desc, (password && strlen (password) > 0) ? "YES" : "NO");
 
     MountFinishData *mf_data = g_new0 (MountFinishData, 1);
     mf_data->target_path = g_strdup (target_path);
@@ -736,19 +707,19 @@ on_ssh_check_finished (GObject *source_object, GAsyncResult *res, gpointer user_
     gint exit_code = g_subprocess_get_exit_status (proc);
     gboolean success = (!err && g_subprocess_get_successful (proc));
 
-    tweaks_log ("SSH pre-check (BatchMode) for '%s': exit_code=%d, success=%s",
-                data->server->name, exit_code, success ? "TRUE" : "FALSE");
+    log_debug ("SSH pre-check (BatchMode) for '%s': exit_code=%d, success=%s",
+               data->server->name, exit_code, success ? "TRUE" : "FALSE");
     if (stderr_buf && strlen (g_strstrip (stderr_buf)) > 0)
-        tweaks_log ("SSH pre-check STDERR: %s", stderr_buf);
+        log_debug ("SSH pre-check STDERR: %s", stderr_buf);
 
     if (success)
     {
-        tweaks_log ("SSH key accepted. Mounting without password...");
+        log_debug ("SSH key accepted. Mounting without password...");
         start_mount_server_sshfs (data->server, data->target_path, NULL);
     }
     else
     {
-        tweaks_log ("SSH key rejected (exit code %d). Prompting password dialog.", exit_code);
+        log_debug ("SSH key rejected (exit code %d). Prompting password dialog.", exit_code);
         show_ssh_password_dialog (data->server, data->target_path);
     }
 
@@ -812,13 +783,13 @@ on_mount_connect_clicked (GtkButton *btn, gpointer user_data)
 
         if (check_proc)
         {
-            tweaks_log ("Checking SSH key for '%s'...", check_data->server->name);
+            log_debug ("Checking SSH key for '%s'...", check_data->server->name);
             g_subprocess_communicate_utf8_async (check_proc, NULL, NULL, on_ssh_check_finished, check_data);
             g_object_unref (check_proc);
         }
         else
         {
-            tweaks_log ("Failed to launch ssh pre-check: %s. Showing password dialog.", err ? err->message : "unknown");
+            log_debug ("Failed to launch ssh pre-check: %s. Showing password dialog.", err ? err->message : "unknown");
             show_ssh_password_dialog (check_data->server, check_data->target_path);
             remote_server_free (check_data->server);
             g_free (check_data->target_path);
@@ -885,7 +856,7 @@ on_mount_dialog_activated (NautilusMenuItem *item, gpointer user_data)
     GtkWindow *parent = get_nautilus_active_window ();
     if (parent)
     {
-        gtk_window_set_transient_for (GTK_WINDOW (d->window), parent); // keep transient
+        gtk_window_set_transient_for (GTK_WINDOW (d->window), parent);
         gtk_window_set_modal (GTK_WINDOW (d->window), TRUE);
     }
 
@@ -982,7 +953,7 @@ on_unmount_ssh_activated (NautilusMenuItem *item, gpointer user_data)
     g_autofree gchar *err_out = NULL;
     gint exit_status = 0;
 
-    tweaks_log ("Unmounting mount point: %s", path);
+    log_debug ("Unmounting mount point: %s", path);
     g_spawn_command_line_sync (cmd, NULL, &err_out, &exit_status, NULL);
 
     if (exit_status != 0)
@@ -991,7 +962,7 @@ on_unmount_ssh_activated (NautilusMenuItem *item, gpointer user_data)
                            ? err_out
                            : _("Failed to unmount point (directory might be busy with another process)");
 
-        tweaks_log ("Error in fusermount (exit code %d): %s", exit_status, msg);
+        log_debug ("Error in fusermount (exit code %d): %s", exit_status, msg);
 
         const gchar *notify_argv[] = {
             "notify-send",
@@ -1005,7 +976,7 @@ on_unmount_ssh_activated (NautilusMenuItem *item, gpointer user_data)
     }
     else
     {
-        tweaks_log ("Mount point %s unmounted successfully", path);
+        log_debug ("Mount point %s unmounted successfully", path);
         g_autoptr (GFile) unmounted_gfile = g_file_new_for_path (path);
         g_file_set_attribute (unmounted_gfile, "metadata::emblems",
                               G_FILE_ATTRIBUTE_TYPE_INVALID,
