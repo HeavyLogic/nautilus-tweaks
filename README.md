@@ -1,41 +1,43 @@
-# Плагин для Nautilus, добавляющий пункты меню
+# Nautilus Tweaks
 
-## Зачем
+A Nautilus extension that adds various useful context menu actions.
 
-- Python-расширение для создания контекстных меню работает медленно.
-- Скрипты не позволяют прятать пункты меню по условной логике.
-- Плагин на C — это самый нативный и гибкий способ.
+## Why
 
-## Описание функционала
+- Python-based extensions for Nautilus context menus are sluggish.
+- Standard Nautilus scripts don't allow conditionally showing or hiding menu items.
+- A native C extension is the fastest, cleanest, and most flexible approach.
 
-1. **Копировать путь.** Автоматически подставляет `~/` (настраивается) и достаёт реальные пути из симлинков.
-2. **Открыть папку как root** — использует современный для GNOME протокол `admin://`.
-3. **Редактировать файл как root.** Использует TUI-редактор (по умолчанию `micro`) в выбранном эмуляторе терминала. Я не выбрал GNOME Text Editor через его `admin://`, потому что там нет поддержки мульти-кареток. А запуск GUI-приложений от `root` (типа Sublime Text) разработчики GNOME блокируют под Wayland.
-4. **Примонтировать SSH (SFTP).** Требует `sshfs` и `fuse3`. Конфигурацию читает из `~/.ssh/config`. По умолчанию монтирует корень сервера `/` (или путь из директивы `# RemotePath: /var/www`).
-5. **Примонтировать FTP / WebDAV / S3.** Требует `rclone` и `fuse3`. Конфигурацию серверов читает из `~/.config/rclone/rclone.conf`.
-6. **Открыть папку в VS Code.**
+## Features
 
-## В планах
-1. Сменить владельца и группу
-2. Прописать права рекурсивно
-3. Посмотреть как FileZilla определяет путь монтирования
-4. Команды для тестирования монтирования SSH и FTP из консоли
-5. Режим редактирования — TUI или `admin://`
+1. **Copy Path.** Automatically replaces `$HOME` with `~/` (configurable) and resolves symlinks to their actual target paths.
+2. **Open folder as root.** Uses the modern GNOME `admin://` GVfs backend.
+3. **Edit file as root.** Launches a TUI text editor (defaults to `micro`) inside your preferred terminal emulator. GNOME Text Editor via `admin://` lacks multi-cursor support, and running GUI applications as root (such as Sublime Text) is blocked under Wayland by design.
+4. **Mount SSH (SFTP).** Requires `sshfs` and `fuse3`. Reads host configurations directly from `~/.ssh/config`. By default mounts the remote server root `/` (or the path defined in `# RemotePath: /var/www`).
+5. **Mount FTP / WebDAV / S3.** Requires `rclone` and `fuse3`. Reads server configurations from `~/.config/rclone/rclone.conf`.
+6. **Open folder in VS Code.**
 
-## Настройка
+## Roadmap
+1. Change owner and group
+2. Recursively apply permissions
+3. Research how FileZilla determines mount paths
+4. CLI commands for testing SSH and FTP mounts from the terminal
+5. Editing mode switch — TUI vs `admin://`
 
-У плагина есть свой конфиг:
-`~/.config/nautilus-custom-actions/config.ini`
+## Configuration
 
-Доступные параметры:
-- `terminal` — эмулятор терминала (`kgx`, `gnome-terminal`, `ptyxis`, `ghostty`, `terminator` и др., поддерживает обёртки).
-- `editor` — консольный редактор для root (`micro`, `nano`, `nvim`, `vim`).
-- `shorten_home` — заменять `$HOME` на `~` при копировании (`true` / `false`).
-- `resolve_symlinks` — разворачивать симлинки до реального пути (`true` / `false`).
-- `remote_dirs` — список базовых папок через запятую, внутри которых разрешено монтирование (по умолчанию `/mnt/Remote`).
-- `emblem` — имя системной иконки для смонтированных папок (по умолчанию `globe`).
+The extension stores its configuration at:
+`~/.config/nautilus-tweaks/config.ini`
 
-### Пример настройки FTP-сервера в `~/.config/rclone/rclone.conf`:
+Available parameters:
+- `terminal` — Terminal emulator (`kgx`, `gnome-terminal`, `ptyxis`, `ghostty`, `terminator`, etc.; supports wrappers).
+- `editor` — Console editor for root (`micro`, `nano`, `nvim`, `vim`).
+- `shorten_home` — Replace `$HOME` with `~` when copying (`true` / `false`).
+- `resolve_symlinks` — Resolve symlinks to their real target path (`true` / `false`).
+- `remote_dirs` — Comma-separated list of allowed base directories inside which mounting is permitted (defaults to `/mnt/Remote`).
+- `emblem` — System icon name for mounted folders (defaults to `globe`).
+
+### Example FTP configuration in `~/.config/rclone/rclone.conf`:
 ```ini
 [old-shop]
 type = ftp
@@ -43,9 +45,9 @@ host = 194.58.112.15
 user = shop_admin
 pass = zK19U8Gg-mUqZ89Q-ObscuredPass...
 ```
-*(Зашифровать пароль для поля `pass` можно командой `rclone obscure "ваш_пароль"` или через интерактивный мастер `rclone config`)*.
+*(To obscure the password for the `pass` field, use `rclone obscure "your_password"` or run the interactive wizard `rclone config`)*.
 
-### Пример настройки SSH-сервера в `~/.ssh/config`:
+### Example SSH configuration in `~/.ssh/config`:
 ```ssh
 Host ruweb
     HostName 185.11.246.104
@@ -54,31 +56,34 @@ Host ruweb
     # RemotePath: /var/www/site
 ```
 
-## Как компилировать
+## Building and Installation
 
-**Установить**
+**Install**
 ```bash
 sudo make install
 ```
 
-**Удалить**
+**Uninstall**
 ```bash
 sudo make uninstall
 ```
 
-*Nautilus должен закрыться сам в процессе установки*
+*Nautilus will automatically quit during installation to reload the modules.*
 
-## Зависимости
+## Dependencies
 
-### Для сборки:
-- Компилятор C (`gcc` или `clang`)
-- `pkgconf` (или `pkg-config`)
-- Заголовочные файлы Nautilus (`libnautilus-extension-4`):
-  - **Arch Linux:** `sudo pacman -S base-devel nautilus`
-  - **Ubuntu / Debian:** `sudo apt install build-essential pkgconf libnautilus-extension-dev`
-  - **Fedora:** `sudo dnf install gcc pkgconf nautilus-devel`
+### Build dependencies:
+- C compiler (`gcc` or `clang`)
+- `make`
+- `pkgconf` (or `pkg-config`)
+- `gettext` (required for compiling `.po` translation catalogs via `msgfmt`)
+- Nautilus extension development headers (`libnautilus-extension-4`):
+  - **Arch Linux:** `sudo pacman -S base-devel nautilus gettext`
+  - **Ubuntu / Debian:** `sudo apt install build-essential pkgconf libnautilus-extension-dev gettext`
+  - **Fedora:** `sudo dnf install gcc make pkgconf nautilus-devel gettext`
 
-### Для работы (Runtime):
-- **Для модуля монтирования (`mount`):**
-  - `sshfs` — для подключения SFTP/SSH
-  - `rclone` — для подключения FTP, WebDAV, S3 и др.
+### Runtime dependencies:
+- **For the mounting module (`mount`):**
+  - `sshfs` — for mounting SFTP/SSH remotes
+  - `rclone` — for mounting FTP, WebDAV, S3, etc.
+  - `fuse3` — for userspace filesystem mounting
