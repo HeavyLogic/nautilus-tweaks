@@ -15,14 +15,14 @@ A Nautilus extension that adds various useful context menu actions.
 3. **Edit file as root.** Launches a TUI text editor (defaults to `micro`) inside your preferred terminal emulator. GNOME Text Editor via `admin://` lacks multi-cursor support, and running GUI applications as root (such as Sublime Text) is blocked under Wayland by design.
 4. **Mount SSH (SFTP).** Requires `sshfs` and `fuse3`. Reads host configurations directly from `~/.ssh/config`. By default mounts the remote server root `/` (or the path defined in `# RemotePath: /var/www`).
 5. **Mount FTP / WebDAV / S3.** Requires `rclone` and `fuse3`. Reads server configurations from `~/.config/rclone/rclone.conf`.
-6. **Open folder in VS Code.**
+6. **Open folder in IDE** - configurable with IDE of you choice.
+7. Change owner and group
+8. Recursively apply permissions
+
 
 ## Roadmap
-1. Change owner and group
-2. Recursively apply permissions
-3. Research how FileZilla determines mount paths
-4. CLI commands for testing SSH and FTP mounts from the terminal
 5. Editing mode switch — TUI vs `admin://`
+6. FTP remote path
 
 ## Configuration
 

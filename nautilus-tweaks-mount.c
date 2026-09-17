@@ -7,6 +7,7 @@
 
 #include "tweaks-config.h"
 #include "tweaks-log.h"
+#include "tweaks-remote.h"
 
 /* Counter for generating unique menu item IDs */
 static guint g_mount_action_counter = 0;
@@ -19,36 +20,29 @@ static GtkWidget *g_active_mount_window = NULL;
 /* -------------------------------------------------------------------------- */
 
 typedef struct {
-    gchar    *name;             /* Server / Host name */
-    gchar    *type_label;       /* Type badge: "SFTP", "FTP", "WEBDAV", "S3", etc. */
-    gchar    *remote_path;      /* Custom starting directory (if set) */
-    gboolean  is_rclone;        /* TRUE for rclone, FALSE for sshfs */
-} RemoteServer;
-
-typedef struct {
     gchar *target_path;
     gchar *server_name;
     gchar *cmd_line;
 } MountFinishData;
 
 typedef struct {
-    GtkWidget    *window;
-    GtkWidget    *btn_connect;
-    gchar        *target_path;
-    GList        *servers;
-    RemoteServer *selected_server;
+    GtkWidget          *window;
+    GtkWidget          *btn_connect;
+    gchar              *target_path;
+    GList              *servers;
+    TweaksRemoteServer *selected_server;
 } MountDialogWidgets;
 
 typedef struct {
-    RemoteServer *server;
-    gchar        *target_path;
+    TweaksRemoteServer *server;
+    gchar              *target_path;
 } SshCheckData;
 
 typedef struct {
-    RemoteServer *server;
-    gchar        *target_path;
-    GtkWidget    *window;
-    GtkWidget    *entry_password;
+    TweaksRemoteServer *server;
+    gchar              *target_path;
+    GtkWidget          *window;
+    GtkWidget          *entry_password;
 } SshPasswordDialog;
 
 /* -------------------------------------------------------------------------- */
@@ -75,32 +69,8 @@ static void nautilus_tweaks_mount_init (NautilusTweaksMount *self) {}
 static void nautilus_tweaks_mount_class_finalize (NautilusTweaksMountClass *klass) {}
 
 /* -------------------------------------------------------------------------- */
-/* Memory and window helper functions                                         */
+/* Window helper functions                                                    */
 /* -------------------------------------------------------------------------- */
-
-static void
-remote_server_free (RemoteServer *s)
-{
-    if (!s)
-        return;
-    g_free (s->name);
-    g_free (s->type_label);
-    g_free (s->remote_path);
-    g_free (s);
-}
-
-static RemoteServer *
-remote_server_copy (const RemoteServer *s)
-{
-    if (!s)
-        return NULL;
-    RemoteServer *copy = g_new0 (RemoteServer, 1);
-    copy->name        = g_strdup (s->name);
-    copy->type_label  = g_strdup (s->type_label);
-    copy->remote_path = g_strdup (s->remote_path);
-    copy->is_rclone   = s->is_rclone;
-    return copy;
-}
 
 static GtkWindow *
 get_nautilus_active_window (void)
@@ -120,92 +90,30 @@ get_nautilus_active_window (void)
     return NULL;
 }
 
+static void
+reload_nautilus_views (void)
+{
+    GApplication *app = g_application_get_default ();
+    if (app && GTK_IS_APPLICATION (app))
+    {
+        GList *windows = gtk_application_get_windows (GTK_APPLICATION (app));
+        for (GList *w = windows; w != NULL; w = w->next)
+        {
+            if (GTK_IS_WINDOW (w->data))
+            {
+                gtk_widget_activate_action (GTK_WIDGET (w->data), "slot.reload", NULL);
+
+                GtkWidget *focus = gtk_window_get_focus (GTK_WINDOW (w->data));
+                if (focus)
+                    gtk_widget_activate_action (focus, "slot.reload", NULL);
+            }
+        }
+    }
+}
+
 /* -------------------------------------------------------------------------- */
-/* Mount verification helpers                                                 */
+/* Path permission check                                                      */
 /* -------------------------------------------------------------------------- */
-
-static gboolean
-is_path_mounted (const gchar *path)
-{
-    FILE *fp = fopen ("/proc/mounts", "r");
-    if (!fp)
-        return FALSE;
-
-    char line[2048];
-    gboolean mounted = FALSE;
-
-    while (fgets (line, sizeof (line), fp))
-    {
-        char dev[512], mnt[1024];
-        if (sscanf (line, "%511s %1023s", dev, mnt) == 2)
-        {
-            if (g_strcmp0 (mnt, path) == 0)
-            {
-                mounted = TRUE;
-                break;
-            }
-        }
-    }
-    fclose (fp);
-    return mounted;
-}
-
-static gboolean
-is_inside_active_mount (const gchar *path)
-{
-    FILE *fp = fopen ("/proc/mounts", "r");
-    if (!fp)
-        return FALSE;
-
-    char line[2048];
-    gboolean inside = FALSE;
-
-    while (fgets (line, sizeof (line), fp))
-    {
-        char dev[512], mnt[1024];
-        if (sscanf (line, "%511s %1023s", dev, mnt) == 2)
-        {
-            if (g_strcmp0 (mnt, "/") == 0)
-                continue;
-
-            gsize mnt_len = strlen (mnt);
-            if (g_str_has_prefix (path, mnt) && path[mnt_len] == '/')
-            {
-                inside = TRUE;
-                break;
-            }
-        }
-    }
-    fclose (fp);
-    return inside;
-}
-
-static gboolean
-has_active_submounts (const gchar *path)
-{
-    FILE *fp = fopen ("/proc/mounts", "r");
-    if (!fp)
-        return FALSE;
-
-    char line[2048];
-    gboolean has_sub = FALSE;
-    gsize path_len = strlen (path);
-
-    while (fgets (line, sizeof (line), fp))
-    {
-        char dev[512], mnt[1024];
-        if (sscanf (line, "%511s %1023s", dev, mnt) == 2)
-        {
-            if (g_str_has_prefix (mnt, path) && mnt[path_len] == '/')
-            {
-                has_sub = TRUE;
-                break;
-            }
-        }
-    }
-    fclose (fp);
-    return has_sub;
-}
 
 static gboolean
 is_path_in_remote_dirs (const gchar *path, TweaksConfig *config)
@@ -224,9 +132,7 @@ is_path_in_remote_dirs (const gchar *path, TweaksConfig *config)
 
         gsize allowed_len = strlen (allowed_dir);
         if (g_str_has_prefix (path, allowed_dir) && path[allowed_len] == '/')
-        {
             return TRUE;
-        }
     }
 
     return FALSE;
@@ -235,182 +141,13 @@ is_path_in_remote_dirs (const gchar *path, TweaksConfig *config)
 static gboolean
 is_path_allowed_for_mount (const gchar *path, TweaksConfig *config)
 {
-    if (is_inside_active_mount (path))
+    if (tweaks_mount_is_inside_mount (path))
         return FALSE;
 
-    if (has_active_submounts (path))
+    if (tweaks_mount_has_submounts (path))
         return FALSE;
 
     return is_path_in_remote_dirs (path, config);
-}
-
-static gboolean
-is_server_already_mounted (RemoteServer *s)
-{
-    FILE *fp = fopen ("/proc/mounts", "r");
-    if (!fp)
-        return FALSE;
-
-    char line[2048];
-    gboolean mounted = FALSE;
-
-    while (fgets (line, sizeof (line), fp))
-    {
-        char dev[512], mnt[1024], fstype[64];
-        if (sscanf (line, "%511s %1023s %63s", dev, mnt, fstype) >= 3)
-        {
-            if (s->is_rclone && (g_str_has_prefix (fstype, "fuse.rclone") || g_strcmp0 (fstype, "rclone") == 0))
-            {
-                g_autofree gchar *prefix = g_strdup_printf ("%s:", s->name);
-                if (g_str_has_prefix (dev, prefix) || g_strcmp0 (dev, s->name) == 0)
-                {
-                    mounted = TRUE;
-                    break;
-                }
-            }
-            else if (!s->is_rclone && (g_str_has_prefix (fstype, "fuse.sshfs") || g_strcmp0 (fstype, "sshfs") == 0))
-            {
-                char *colon = strchr (dev, ':');
-                if (colon)
-                {
-                    g_autofree gchar *host_part = g_strndup (dev, colon - dev);
-                    if (g_strcmp0 (host_part, s->name) == 0 || g_str_has_suffix (host_part, s->name))
-                    {
-                        mounted = TRUE;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    fclose (fp);
-    return mounted;
-}
-
-/* -------------------------------------------------------------------------- */
-/* Parsing ~/.ssh/config and rclone.conf                                      */
-/* -------------------------------------------------------------------------- */
-
-static GList *
-get_available_remote_servers (void)
-{
-    GList *list = NULL;
-    const gchar *home = g_get_home_dir ();
-    const gchar *config_dir = g_get_user_config_dir ();
-
-    /* 1. ~/.ssh/config */
-    g_autofree gchar *ssh_cfg = g_build_filename (home, ".ssh", "config", NULL);
-    FILE *fp = fopen (ssh_cfg, "r");
-    if (fp)
-    {
-        char line[1024];
-        RemoteServer *cur = NULL;
-
-        while (fgets (line, sizeof (line), fp))
-        {
-            gchar *trimmed = g_strstrip (line);
-
-            if (trimmed[0] == '#')
-            {
-                if (cur != NULL && g_ascii_strncasecmp (trimmed, "# RemotePath:", 13) == 0)
-                {
-                    cur->remote_path = g_strdup (g_strstrip (trimmed + 13));
-                }
-                continue;
-            }
-
-            if (g_ascii_strncasecmp (trimmed, "Host ", 5) == 0)
-            {
-                gchar *host_name = g_strstrip (trimmed + 5);
-                if (strlen (host_name) > 0 && !strchr (host_name, '*') && !strchr (host_name, '?'))
-                {
-                    cur = g_new0 (RemoteServer, 1);
-                    cur->name       = g_strdup (host_name);
-                    cur->type_label = g_strdup ("SFTP");
-                    cur->is_rclone  = FALSE;
-
-                    if (!is_server_already_mounted (cur))
-                    {
-                        list = g_list_append (list, cur);
-                    }
-                    else
-                    {
-                        remote_server_free (cur);
-                        cur = NULL;
-                    }
-                }
-                else
-                {
-                    cur = NULL;
-                }
-            }
-        }
-        fclose (fp);
-    }
-
-    /* 2. ~/.config/rclone/rclone.conf */
-    g_autofree gchar *rclone_cfg = g_build_filename (config_dir, "rclone", "rclone.conf", NULL);
-    g_autoptr (GKeyFile) keyfile = g_key_file_new ();
-    if (g_key_file_load_from_file (keyfile, rclone_cfg, G_KEY_FILE_NONE, NULL))
-    {
-        gsize num_groups = 0;
-        gchar **groups = g_key_file_get_groups (keyfile, &num_groups);
-
-        for (gsize i = 0; i < num_groups; i++)
-        {
-            gchar *group_name = groups[i];
-            gchar *type = g_key_file_get_string (keyfile, group_name, "type", NULL);
-
-            RemoteServer *cur = g_new0 (RemoteServer, 1);
-            cur->name      = g_strdup (group_name);
-            cur->is_rclone = TRUE;
-
-            if (type && strlen (g_strstrip (type)) > 0)
-            {
-                cur->type_label = g_ascii_strup (type, -1);
-                g_free (type);
-            }
-            else
-            {
-                cur->type_label = g_strdup ("RCLONE");
-            }
-
-            if (!is_server_already_mounted (cur))
-            {
-                list = g_list_append (list, cur);
-            }
-            else
-            {
-                remote_server_free (cur);
-            }
-        }
-        g_strfreev (groups);
-    }
-
-    return list;
-}
-
-static void
-reload_nautilus_views (void)
-{
-    GApplication *app = g_application_get_default ();
-    if (app && GTK_IS_APPLICATION (app))
-    {
-        GList *windows = gtk_application_get_windows (GTK_APPLICATION (app));
-        for (GList *w = windows; w != NULL; w = w->next)
-        {
-            if (GTK_IS_WINDOW (w->data))
-            {
-                gtk_widget_activate_action (GTK_WIDGET (w->data), "slot.reload", NULL);
-
-                GtkWidget *focus = gtk_window_get_focus (GTK_WINDOW (w->data));
-                if (focus)
-                {
-                    gtk_widget_activate_action (focus, "slot.reload", NULL);
-                }
-            }
-        }
-    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -459,20 +196,13 @@ on_mount_communicated (GObject *source_object, GAsyncResult *res, gpointer user_
     }
     else
     {
-        /* Extract detailed reason from stderr for display in notification */
         g_autofree gchar *err_msg = NULL;
         if (stderr_buf && strlen (g_strstrip (stderr_buf)) > 0)
-        {
             err_msg = g_strdup (stderr_buf);
-        }
         else if (err)
-        {
             err_msg = g_strdup (err->message);
-        }
         else
-        {
             err_msg = g_strdup (_("Process exited with an error (non-zero exit code). See ~/.config/nautilus-tweaks/debug.log"));
-        }
 
         log_debug ("Mount error for %s: %s", data->server_name, err_msg);
 
@@ -494,7 +224,7 @@ on_mount_communicated (GObject *source_object, GAsyncResult *res, gpointer user_
 }
 
 static void
-start_mount_server_rclone (RemoteServer *target_server, const gchar *target_path)
+start_mount_server_rclone (TweaksRemoteServer *target_server, const gchar *target_path)
 {
     g_autofree gchar *remote_spec = NULL;
     if (target_server->remote_path && strlen (target_server->remote_path) > 0)
@@ -544,7 +274,7 @@ start_mount_server_rclone (RemoteServer *target_server, const gchar *target_path
 }
 
 static void
-start_mount_server_sshfs (RemoteServer *target_server, const gchar *target_path, const gchar *password)
+start_mount_server_sshfs (TweaksRemoteServer *target_server, const gchar *target_path, const gchar *password)
 {
     g_autofree gchar *remote_spec = target_server->remote_path
         ? g_strdup_printf ("%s:%s", target_server->name, target_server->remote_path)
@@ -556,43 +286,23 @@ start_mount_server_sshfs (RemoteServer *target_server, const gchar *target_path,
         G_SUBPROCESS_FLAGS_STDERR_PIPE
     );
 
-    /* CRITICAL: Force C-locale for ssh so prompt is always "Password:",
-     * and prevent looking for external askpass */
     g_subprocess_launcher_setenv (launcher, "LC_ALL", "C", TRUE);
     g_subprocess_launcher_setenv (launcher, "SSH_ASKPASS_REQUIRE", "never", TRUE);
 
+    gboolean has_password = (password && strlen (password) > 0);
+    const gchar *sshfs_opts = tweaks_remote_get_sshfs_options (has_password);
+
+    g_autofree gchar *cmd_desc = g_strdup_printf ("sshfs %s %s -o %s", remote_spec, target_path, sshfs_opts);
+    g_autofree gchar *pass_nl = has_password ? g_strdup_printf ("%s\n", password) : NULL;
+
     g_autoptr (GError) spawn_err = NULL;
-    GSubprocess *mount_proc = NULL;
-    g_autofree gchar *pass_nl = NULL;
-    g_autofree gchar *cmd_desc = NULL;
-
-    if (password && strlen (password) > 0)
-    {
-        pass_nl = g_strdup_printf ("%s\n", password);
-        cmd_desc = g_strdup_printf ("sshfs %s %s -o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,follow_symlinks,StrictHostKeyChecking=accept-new,password_stdin",
-                                    remote_spec, target_path);
-
-        mount_proc = g_subprocess_launcher_spawn (
-            launcher,
-            &spawn_err,
-            "sshfs", remote_spec, target_path,
-            "-o", "reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,follow_symlinks,StrictHostKeyChecking=accept-new,password_stdin",
-            NULL
-        );
-    }
-    else
-    {
-        cmd_desc = g_strdup_printf ("sshfs %s %s -o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,follow_symlinks,StrictHostKeyChecking=accept-new",
-                                    remote_spec, target_path);
-
-        mount_proc = g_subprocess_launcher_spawn (
-            launcher,
-            &spawn_err,
-            "sshfs", remote_spec, target_path,
-            "-o", "reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,follow_symlinks,StrictHostKeyChecking=accept-new",
-            NULL
-        );
-    }
+    GSubprocess *mount_proc = g_subprocess_launcher_spawn (
+        launcher,
+        &spawn_err,
+        "sshfs", remote_spec, target_path,
+        "-o", sshfs_opts,
+        NULL
+    );
 
     if (spawn_err)
     {
@@ -600,14 +310,13 @@ start_mount_server_sshfs (RemoteServer *target_server, const gchar *target_path,
         return;
     }
 
-    log_debug ("Launching sshfs: %s (password provided: %s)", cmd_desc, (password && strlen (password) > 0) ? "YES" : "NO");
+    log_debug ("Launching sshfs: %s (password provided: %s)", cmd_desc, has_password ? "YES" : "NO");
 
     MountFinishData *mf_data = g_new0 (MountFinishData, 1);
     mf_data->target_path = g_strdup (target_path);
     mf_data->server_name = g_strdup (target_server->name);
     mf_data->cmd_line    = g_steal_pointer (&cmd_desc);
 
-    /* Asynchronously send password to stdin, read stdout/stderr and wait for exit */
     g_subprocess_communicate_utf8_async (mount_proc, pass_nl, NULL, on_mount_communicated, mf_data);
     g_object_unref (mount_proc);
 }
@@ -630,16 +339,16 @@ static void
 on_password_dialog_destroyed (gpointer data, GObject *where_the_object_was)
 {
     SshPasswordDialog *pd = (SshPasswordDialog *) data;
-    remote_server_free (pd->server);
+    tweaks_remote_server_free (pd->server);
     g_free (pd->target_path);
     g_free (pd);
 }
 
 static void
-show_ssh_password_dialog (RemoteServer *server, const gchar *target_path)
+show_ssh_password_dialog (TweaksRemoteServer *server, const gchar *target_path)
 {
     SshPasswordDialog *pd = g_new0 (SshPasswordDialog, 1);
-    pd->server = remote_server_copy (server);
+    pd->server = tweaks_remote_server_copy (server);
     pd->target_path = g_strdup (target_path);
 
     pd->window = gtk_window_new ();
@@ -707,7 +416,7 @@ on_ssh_check_finished (GObject *source_object, GAsyncResult *res, gpointer user_
     gint exit_code = g_subprocess_get_exit_status (proc);
     gboolean success = (!err && g_subprocess_get_successful (proc));
 
-    log_debug ("SSH pre-check (BatchMode) for '%s': exit_code=%d, success=%s",
+    log_debug ("SSH pre-check for '%s': exit_code=%d, success=%s",
                data->server->name, exit_code, success ? "TRUE" : "FALSE");
     if (stderr_buf && strlen (g_strstrip (stderr_buf)) > 0)
         log_debug ("SSH pre-check STDERR: %s", stderr_buf);
@@ -723,7 +432,7 @@ on_ssh_check_finished (GObject *source_object, GAsyncResult *res, gpointer user_
         show_ssh_password_dialog (data->server, data->target_path);
     }
 
-    remote_server_free (data->server);
+    tweaks_remote_server_free (data->server);
     g_free (data->target_path);
     g_free (data);
 }
@@ -738,7 +447,7 @@ on_mount_row_selected (GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
     MountDialogWidgets *d = (MountDialogWidgets *) user_data;
     if (row)
     {
-        d->selected_server = (RemoteServer *) g_object_get_data (G_OBJECT (row), "server");
+        d->selected_server = (TweaksRemoteServer *) g_object_get_data (G_OBJECT (row), "server");
         gtk_widget_set_sensitive (d->btn_connect, TRUE);
     }
     else
@@ -762,23 +471,16 @@ on_mount_connect_clicked (GtkButton *btn, gpointer user_data)
     else
     {
         SshCheckData *check_data = g_new0 (SshCheckData, 1);
-        check_data->server = remote_server_copy (d->selected_server);
+        check_data->server = tweaks_remote_server_copy (d->selected_server);
         check_data->target_path = g_strdup (d->target_path);
 
-        g_autoptr (GSubprocessLauncher) check_launcher = g_subprocess_launcher_new (
-            G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE
-        );
-        g_subprocess_launcher_setenv (check_launcher, "LC_ALL", "C", TRUE);
-
         g_autoptr (GError) err = NULL;
-        GSubprocess *check_proc = g_subprocess_launcher_spawn (
-            check_launcher,
-            &err,
-            "ssh", "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=accept-new",
-            "-o", "ConnectTimeout=2",
-            check_data->server->name, "exit",
-            NULL
+        GSubprocess *check_proc = tweaks_remote_ssh_spawn (
+            check_data->server->name,
+            "exit",
+            2,
+            G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE,
+            &err
         );
 
         if (check_proc)
@@ -791,7 +493,7 @@ on_mount_connect_clicked (GtkButton *btn, gpointer user_data)
         {
             log_debug ("Failed to launch ssh pre-check: %s. Showing password dialog.", err ? err->message : "unknown");
             show_ssh_password_dialog (check_data->server, check_data->target_path);
-            remote_server_free (check_data->server);
+            tweaks_remote_server_free (check_data->server);
             g_free (check_data->target_path);
             g_free (check_data);
         }
@@ -813,7 +515,7 @@ on_mount_dialog_destroyed (gpointer data, GObject *where_the_object_was)
     g_active_mount_window = NULL;
 
     g_free (d->target_path);
-    g_list_free_full (d->servers, (GDestroyNotify) remote_server_free);
+    g_list_free_full (d->servers, (GDestroyNotify) tweaks_remote_server_free);
     g_free (d);
 }
 
@@ -828,7 +530,7 @@ on_mount_dialog_activated (NautilusMenuItem *item, gpointer user_data)
         return;
     }
 
-    GList *servers = get_available_remote_servers ();
+    GList *servers = tweaks_remote_get_available_servers ();
     if (!servers)
     {
         const gchar *notify_argv[] = {
@@ -890,7 +592,7 @@ on_mount_dialog_activated (NautilusMenuItem *item, gpointer user_data)
 
     for (GList *l = servers; l != NULL; l = l->next)
     {
-        RemoteServer *s = (RemoteServer *) l->data;
+        TweaksRemoteServer *s = (TweaksRemoteServer *) l->data;
         GtkWidget *row = gtk_list_box_row_new ();
         g_object_set_data (G_OBJECT (row), "server", s);
 
@@ -1013,7 +715,7 @@ nautilus_tweaks_mount_get_file_items (NautilusMenuProvider *provider, GList *fil
     GList *items = NULL;
     TweaksConfig *config = tweaks_config_load ();
 
-    if (is_path_mounted (target_path))
+    if (tweaks_mount_is_path_mounted (target_path))
     {
         g_autofree gchar *unmount_id = g_strdup_printf ("NautilusTweaks::Unmount_%u", ++g_mount_action_counter);
         NautilusMenuItem *unmount_item = nautilus_menu_item_new (

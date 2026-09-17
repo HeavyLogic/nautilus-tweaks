@@ -179,7 +179,7 @@ for ((i=0; i<TOTAL; i++)); do
         OUT_LIB="libnautilus-tweaks-${mod_id}.so"
 
         echo -e "  [+] Compiling \e[1m$mod_src\e[0m -> $OUT_LIB"
-        gcc $CFLAGS "$mod_src" tweaks-config.c tweaks-log.c -o "$OUT_LIB" $LDFLAGS
+        gcc $CFLAGS "$mod_src" tweaks-config.c tweaks-log.c tweaks-remote.c -o "$OUT_LIB" $LDFLAGS
 
         install -m 755 "$OUT_LIB" "$EXTENSIONS_DIR"/
         echo -e "      \e[32mInstalled to $EXTENSIONS_DIR/$OUT_LIB\e[0m"

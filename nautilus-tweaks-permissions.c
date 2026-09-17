@@ -11,37 +11,10 @@
 
 #include "tweaks-config.h"
 #include "tweaks-log.h"
+#include "tweaks-remote.h"
 
 static guint g_permissions_action_counter = 0;
 static GtkWidget *g_active_dialog_window = NULL;
-
-/* -------------------------------------------------------------------------- */
-/* Filesystem types and mount data                                            */
-/* -------------------------------------------------------------------------- */
-
-typedef enum {
-    FS_MODE_LOCAL,
-    FS_MODE_SSHFS,
-    FS_MODE_RCLONE
-} FsMode;
-
-typedef struct {
-    FsMode mode;
-    gchar *ssh_host;
-    gchar *remote_base_path;
-    gchar *mount_point;
-} MountInfo;
-
-static void
-mount_info_free (MountInfo *info)
-{
-    if (!info)
-        return;
-    g_free (info->ssh_host);
-    g_free (info->remote_base_path);
-    g_free (info->mount_point);
-    g_free (info);
-}
 
 /* -------------------------------------------------------------------------- */
 /* Path helper functions                                                      */
@@ -64,100 +37,13 @@ format_path_for_display (const gchar *path)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Filesystem mode detection via /proc/mounts                                 */
-/* -------------------------------------------------------------------------- */
-
-static MountInfo *
-get_mount_info_for_path (const gchar *path)
-{
-    MountInfo *info = g_new0 (MountInfo, 1);
-    info->mode = FS_MODE_LOCAL;
-
-    FILE *fp = fopen ("/proc/mounts", "r");
-    if (!fp)
-        return info;
-
-    char line[2048];
-    gsize best_match_len = 0;
-
-    while (fgets (line, sizeof (line), fp))
-    {
-        char dev[512], mnt[1024], fstype[64];
-        if (sscanf (line, "%511s %1023s %63s", dev, mnt, fstype) >= 3)
-        {
-            gsize mnt_len = strlen (mnt);
-            if (g_str_has_prefix (path, mnt) && (path[mnt_len] == '/' || path[mnt_len] == '\0' || mnt_len == 1))
-            {
-                if (mnt_len > best_match_len)
-                {
-                    best_match_len = mnt_len;
-                    g_free (info->mount_point);
-                    info->mount_point = g_strdup (mnt);
-
-                    if (g_str_has_prefix (fstype, "fuse.rclone") || g_strcmp0 (fstype, "rclone") == 0)
-                    {
-                        info->mode = FS_MODE_RCLONE;
-                    }
-                    else if (g_str_has_prefix (fstype, "fuse.sshfs") || g_strcmp0 (fstype, "sshfs") == 0)
-                    {
-                        info->mode = FS_MODE_SSHFS;
-                        g_free (info->ssh_host);
-                        g_free (info->remote_base_path);
-
-                        char *colon = strchr (dev, ':');
-                        if (colon)
-                        {
-                            info->ssh_host = g_strndup (dev, colon - dev);
-                            info->remote_base_path = g_strdup (colon + 1);
-                            if (strlen (info->remote_base_path) == 0)
-                            {
-                                g_free (info->remote_base_path);
-                                info->remote_base_path = g_strdup ("/");
-                            }
-                        }
-                        else
-                        {
-                            info->ssh_host = g_strdup (dev);
-                            info->remote_base_path = g_strdup ("/");
-                        }
-                    }
-                    else
-                    {
-                        info->mode = FS_MODE_LOCAL;
-                    }
-                }
-            }
-        }
-    }
-    fclose (fp);
-    return info;
-}
-
-static gchar *
-translate_to_remote_path (const gchar *local_path, MountInfo *info)
-{
-    if (info->mode != FS_MODE_SSHFS || !info->mount_point)
-        return g_strdup (local_path);
-
-    gsize mnt_len = strlen (info->mount_point);
-    const gchar *subpath = local_path + mnt_len;
-    while (*subpath == '/')
-        subpath++;
-
-    if (g_strcmp0 (info->remote_base_path, "/") == 0 || strlen (info->remote_base_path) == 0)
-        return g_strdup_printf ("/%s", subpath);
-
-    return g_build_filename (info->remote_base_path, subpath, NULL);
-}
-
-/* -------------------------------------------------------------------------- */
 /* Widget data structure                                                      */
 /* -------------------------------------------------------------------------- */
 
 typedef struct {
-    GtkWidget *window;
-    GList     *target_paths;
-    MountInfo *mount_info;
+    GtkWidget       *window;
+    GList           *target_paths;
+    TweaksMountInfo *mount_info;
 
     /* Stack switching (Loading <-> Form) */
     GtkWidget *stack_pages;
@@ -597,7 +483,7 @@ on_apply_clicked (GtkButton *btn, gpointer user_data)
     for (GList *l = w->target_paths; l != NULL; l = l->next)
     {
         const gchar *local_path = (const gchar *) l->data;
-        g_autofree gchar *target_path = translate_to_remote_path (local_path, w->mount_info);
+        g_autofree gchar *target_path = tweaks_mount_translate_to_remote (w->mount_info, local_path);
         g_autofree gchar *quoted_path = g_shell_quote (target_path);
 
         if (!first)
@@ -644,24 +530,25 @@ on_apply_clicked (GtkButton *btn, gpointer user_data)
     }
 
     g_autoptr (GError) spawn_err = NULL;
-    g_autoptr (GSubprocessLauncher) launcher = g_subprocess_launcher_new (
-        G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE
-    );
     GSubprocess *proc = NULL;
 
-    if (w->mount_info->mode == FS_MODE_SSHFS && w->mount_info->ssh_host)
+    if (w->mount_info->mode == TWEAKS_FS_SSHFS && w->mount_info->ssh_host)
     {
         log_debug ("[APPLY REMOTE] Server: %s, Command: %s", w->mount_info->ssh_host, inner_cmd->str);
-        proc = g_subprocess_launcher_spawn (
-            launcher,
-            &spawn_err,
-            "ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", w->mount_info->ssh_host, inner_cmd->str,
-            NULL
+        proc = tweaks_remote_ssh_spawn (
+            w->mount_info->ssh_host,
+            inner_cmd->str,
+            10,
+            G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE,
+            &spawn_err
         );
     }
     else
     {
         log_debug ("[APPLY LOCAL] Command: pkexec sh -c \"%s\"", inner_cmd->str);
+        g_autoptr (GSubprocessLauncher) launcher = g_subprocess_launcher_new (
+            G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE
+        );
         proc = g_subprocess_launcher_spawn (
             launcher,
             &spawn_err,
@@ -701,7 +588,7 @@ on_dialog_destroyed (gpointer data, GObject *where_the_object_was)
     if (w)
     {
         g_list_free_full (w->target_paths, g_free);
-        mount_info_free (w->mount_info);
+        tweaks_mount_info_free (w->mount_info);
         g_free (w);
     }
 }
@@ -881,28 +768,25 @@ on_remote_load_finished (GObject *source_object, GAsyncResult *res, gpointer use
 static void
 start_async_data_load (PermissionsDialogWidgets *w, const gchar *first_path)
 {
-    if (w->mount_info->mode == FS_MODE_SSHFS && w->mount_info->ssh_host)
+    if (w->mount_info->mode == TWEAKS_FS_SSHFS && w->mount_info->ssh_host)
     {
-        g_autofree gchar *rem_path = translate_to_remote_path (first_path, w->mount_info);
+        g_autofree gchar *rem_path = tweaks_mount_translate_to_remote (w->mount_info, first_path);
         g_autofree gchar *quoted_rem = g_shell_quote (rem_path);
 
         log_debug ("[ASYNC SSH] Starting data fetch from %s", w->mount_info->ssh_host);
 
         g_autoptr (GError) err = NULL;
-        g_autoptr (GSubprocessLauncher) launcher = g_subprocess_launcher_new (
-            G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE
-        );
-
         g_autofree gchar *remote_cmd = g_strdup_printf (
             "stat -c '%%u:%%g:%%a:%%U:%%G' %s 2>/dev/null; echo '===PASSWD==='; getent passwd; echo '===GROUPS==='; getent group",
             quoted_rem
         );
 
-        GSubprocess *proc = g_subprocess_launcher_spawn (
-            launcher,
-            &err,
-            "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", w->mount_info->ssh_host, remote_cmd,
-            NULL
+        GSubprocess *proc = tweaks_remote_ssh_spawn (
+            w->mount_info->ssh_host,
+            remote_cmd,
+            5,
+            G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE,
+            &err
         );
 
         if (proc)
@@ -970,9 +854,9 @@ create_permissions_window (GList *files)
     }
 
     if (first_path)
-        w->mount_info = get_mount_info_for_path (first_path);
+        w->mount_info = tweaks_mount_info_get_for_path (first_path);
     else
-        w->mount_info = g_new0 (MountInfo, 1);
+        w->mount_info = g_new0 (TweaksMountInfo, 1);
 
     w->owners_model = gtk_string_list_new (NULL);
     w->groups_model = gtk_string_list_new (NULL);
@@ -1004,7 +888,7 @@ create_permissions_window (GList *files)
     gtk_box_append (GTK_BOX (loading_box), w->spinner);
 
     w->lbl_loading = gtk_label_new (
-        (w->mount_info->mode == FS_MODE_SSHFS)
+        (w->mount_info->mode == TWEAKS_FS_SSHFS)
         ? _("Loading users and permissions from server...")
         : _("Reading permissions...")
     );
@@ -1026,9 +910,9 @@ create_permissions_window (GList *files)
     guint target_count = g_list_length (w->target_paths);
     if (target_count == 1 && first_path)
     {
-        if (w->mount_info->mode == FS_MODE_SSHFS && w->mount_info->ssh_host)
+        if (w->mount_info->mode == TWEAKS_FS_SSHFS && w->mount_info->ssh_host)
         {
-            g_autofree gchar *rem = translate_to_remote_path (first_path, w->mount_info);
+            g_autofree gchar *rem = tweaks_mount_translate_to_remote (w->mount_info, first_path);
             target_label_text = g_strdup_printf (_("Remote: %s"), rem);
         }
         else
@@ -1224,13 +1108,13 @@ nautilus_tweaks_permissions_get_file_items (NautilusMenuProvider *provider, GLis
         g_autofree gchar *path = g_file_get_path (loc);
         if (path)
         {
-            MountInfo *info = get_mount_info_for_path (path);
-            if (info->mode == FS_MODE_RCLONE)
+            TweaksMountInfo *info = tweaks_mount_info_get_for_path (path);
+            if (info->mode == TWEAKS_FS_RCLONE)
             {
-                mount_info_free (info);
+                tweaks_mount_info_free (info);
                 return NULL;
             }
-            mount_info_free (info);
+            tweaks_mount_info_free (info);
         }
     }
 
@@ -1272,13 +1156,13 @@ nautilus_tweaks_permissions_get_background_items (NautilusMenuProvider *provider
     if (!target_path)
         return NULL;
 
-    MountInfo *info = get_mount_info_for_path (target_path);
-    if (info->mode == FS_MODE_RCLONE)
+    TweaksMountInfo *info = tweaks_mount_info_get_for_path (target_path);
+    if (info->mode == TWEAKS_FS_RCLONE)
     {
-        mount_info_free (info);
+        tweaks_mount_info_free (info);
         return NULL;
     }
-    mount_info_free (info);
+    tweaks_mount_info_free (info);
 
     GList *items = NULL;
     g_autofree gchar *bg_perm_id = g_strdup_printf ("NautilusTweaks::BgPermissions_%u", ++g_permissions_action_counter);

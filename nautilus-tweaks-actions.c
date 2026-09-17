@@ -8,6 +8,7 @@
 #include <limits.h>
 
 #include "tweaks-config.h"
+#include "tweaks-remote.h"
 
 /* Counter for generating unique menu item IDs */
 static guint g_action_counter = 0;
@@ -128,7 +129,7 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
 
         g_autofree gchar *target_path = NULL;
 
-        /* Resolve symlink */
+        /* Resolve symlink if requested */
         if (config->resolve_symlinks && g_file_test (path, G_FILE_TEST_IS_SYMLINK))
         {
             char *resolved = realpath (path, NULL);
@@ -165,25 +166,35 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
             }
         }
 
-        const gchar *final_path = target_path ? target_path : path;
+        const gchar *candidate_path = target_path ? target_path : path;
 
         if (!first)
             g_string_append_c (text, '\n');
         first = FALSE;
 
-        /* Shorten $HOME to ~ */
-        if (config->shorten_home && home && g_strcmp0 (final_path, home) == 0)
+        /* Check if path is on a remote server */
+        g_autofree gchar *remote_path = tweaks_remote_resolve_path (candidate_path);
+        if (remote_path)
         {
-            g_string_append (text, "~");
-        }
-        else if (config->shorten_home && home && g_str_has_prefix (final_path, home) && final_path[home_len] == '/')
-        {
-            g_string_append_c (text, '~');
-            g_string_append (text, final_path + home_len);
+            /* Copy actual remote path as-is */
+            g_string_append (text, remote_path);
         }
         else
         {
-            g_string_append (text, final_path);
+            /* Local path: apply shorten $HOME to ~ */
+            if (config->shorten_home && home && g_strcmp0 (candidate_path, home) == 0)
+            {
+                g_string_append (text, "~");
+            }
+            else if (config->shorten_home && home && g_str_has_prefix (candidate_path, home) && candidate_path[home_len] == '/')
+            {
+                g_string_append_c (text, '~');
+                g_string_append (text, candidate_path + home_len);
+            }
+            else
+            {
+                g_string_append (text, candidate_path);
+            }
         }
     }
 

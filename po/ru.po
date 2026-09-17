@@ -105,8 +105,8 @@ msgstr "Отмонтировать удалённый сервер"
 msgid "Mount Server..."
 msgstr "Примонтировать сервер..."
 
-msgid "Select server from ~/.ssh/config or ~/.config/rclone/rclone.conf and mount"
-msgstr "Выбрать сервер из ~/.ssh/config или ~/.config/rclone/rclone.conf и примонтировать"
+msgid "Select remote server and mount"
+msgstr "Выбрать и примонтировать удалённый сервер"
 
 msgid "Permissions"
 msgstr "Права доступа"
