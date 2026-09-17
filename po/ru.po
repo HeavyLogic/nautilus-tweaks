@@ -1,0 +1,187 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: nautilus-tweaks\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2024-01-01 00:00+0000\n"
+"PO-Revision-Date: 2024-01-01 00:00+0000\n"
+"Last-Translator: \n"
+"Language-Team: Russian\n"
+"Language: ru\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+
+msgid "Broken Symlink"
+msgstr "Битый симлинк"
+
+msgid "Target file does not exist, but link path was copied to clipboard"
+msgstr "Конечный файл не существует, но ссылка всё равно скопирована в буфер"
+
+msgid "Copy Folder Path"
+msgstr "Копировать путь к папке"
+
+msgid "Copy File Path"
+msgstr "Копировать путь к файлу"
+
+msgid "Copy Paths (%u)"
+msgstr "Копировать пути (%u)"
+
+msgid "Copy path to clipboard"
+msgstr "Копирует путь в буфер обмена"
+
+msgid "Copy current folder path to clipboard"
+msgstr "Копирует путь текущей папки в буфер обмена"
+
+msgid "Open in VS Code"
+msgstr "Открыть папку в VS Code"
+
+msgid "Open this directory as a project in VS Code"
+msgstr "Открыть эту директорию как проект в VS Code"
+
+msgid "Open current directory as a project in VS Code"
+msgstr "Открыть текущую директорию как проект в VS Code"
+
+msgid "Open as Root"
+msgstr "Открыть как root"
+
+msgid "Edit as Root (%s)"
+msgstr "Редактировать как root (%s)"
+
+msgid "Open this folder in Nautilus with administrator privileges"
+msgstr "Открыть эту папку в Nautilus с правами администратора"
+
+msgid "Open current folder in Nautilus with administrator privileges"
+msgstr "Открыть текущую папку в Nautilus с правами администратора"
+
+msgid "Edit file in console editor as root"
+msgstr "Редактировать файл в консольном редакторе от имени root"
+
+msgid "Process exited with an error (non-zero exit code). See ~/.config/nautilus-tweaks/debug.log"
+msgstr "Процесс завершился с ошибкой (код != 0). См. ~/.config/nautilus-tweaks/debug.log"
+
+msgid "Connection Error"
+msgstr "Ошибка подключения"
+
+msgid "Authentication: %s"
+msgstr "Аутентификация: %s"
+
+msgid "Enter password to connect to \"%s\":"
+msgstr "Введите пароль для подключения к «%s»:"
+
+msgid "Cancel"
+msgstr "Отмена"
+
+msgid "Connect"
+msgstr "Подключить"
+
+msgid "Remote Servers"
+msgstr "Удалённые серверы"
+
+msgid "All configured servers are already connected or none were found in configurations"
+msgstr "Все настроенные серверы уже подключены или не найдены в конфигурациях"
+
+msgid "Mount Server"
+msgstr "Монтирование сервера"
+
+msgid "Mount point: %s"
+msgstr "Точка: %s"
+
+msgid "Select server to connect:"
+msgstr "Выберите сервер для подключения:"
+
+msgid "Failed to unmount point (directory might be busy with another process)"
+msgstr "Не удалось отмонтировать точку (возможно, каталог занят другим процессом)"
+
+msgid "Unmount Error"
+msgstr "Ошибка размонтирования"
+
+msgid "Unmount"
+msgstr "Отмонтировать"
+
+msgid "Unmount remote server"
+msgstr "Отмонтировать удалённый сервер"
+
+msgid "Mount Server..."
+msgstr "Примонтировать сервер..."
+
+msgid "Select server from ~/.ssh/config or ~/.config/rclone/rclone.conf and mount"
+msgstr "Выбрать сервер из ~/.ssh/config или ~/.config/rclone/rclone.conf и примонтировать"
+
+msgid "Permissions"
+msgstr "Права доступа"
+
+msgid "Permissions and owner updated successfully"
+msgstr "Права и владелец успешно обновлены"
+
+msgid "Operation cancelled by user or permission denied"
+msgstr "Операция отменена пользователем или ошибка доступа"
+
+msgid "Error Changing Permissions"
+msgstr "Ошибка изменения прав"
+
+msgid "Loading users and permissions from server..."
+msgstr "Загрузка пользователей и прав с сервера..."
+
+msgid "Reading permissions..."
+msgstr "Чтение прав доступа..."
+
+msgid "Target (SSH: %s): %s"
+msgstr "Цель (SSH: %s): %s"
+
+msgid "Target: %s"
+msgstr "Цель: %s"
+
+msgid "Selected: %u items"
+msgstr "Выбрано объектов: %u"
+
+msgid "Owner:"
+msgstr "Владелец:"
+
+msgid "Group:"
+msgstr "Группа:"
+
+msgid "Show all users and groups"
+msgstr "Показать всех пользователей и группы"
+
+msgid "Permissions:"
+msgstr "Права:"
+
+msgid "_Owner"
+msgstr "_Владелец"
+
+msgid "_Group"
+msgstr "_Группа"
+
+msgid "Ot_hers"
+msgstr "Д_ругие"
+
+msgid "O_ctal:"
+msgstr "_Octal:"
+
+msgid "Set UID"
+msgstr "Set UID"
+
+msgid "Set GID"
+msgstr "Set GID"
+
+msgid "Sticky bit"
+msgstr "Sticky bit"
+
+msgid "Add _X to directories"
+msgstr "Добавить _X для папок"
+
+msgid "Set owner, group and permissions _recursively"
+msgstr "Применить владельца, группу и права _рекурсивно"
+
+msgid "Apply"
+msgstr "Применить"
+
+msgid "Permissions..."
+msgstr "Права..."
+
+msgid "Change owner, group and permissions (chmod/chown)"
+msgstr "Изменить владельца, группу и права доступа (chmod/chown)"
+
+msgid "Change owner, group and permissions of current folder (chmod/chown)"
+msgstr "Изменить владельца, группу и права доступа текущей папки (chmod/chown)"

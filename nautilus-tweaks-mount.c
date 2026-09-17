@@ -8,21 +8,21 @@
 
 #include "tweaks-config.h"
 
-/* Счётчик для генерации уникальных ID пунктов меню */
+/* Counter for generating unique menu item IDs */
 static guint g_mount_action_counter = 0;
 
-/* Указатель на активное окно диалога выбора (Single Instance) */
+/* Pointer to active selection dialog window (Single Instance) */
 static GtkWidget *g_active_mount_window = NULL;
 
 /* -------------------------------------------------------------------------- */
-/* Структуры данных                                                           */
+/* Data structures                                                            */
 /* -------------------------------------------------------------------------- */
 
 typedef struct {
-    gchar    *name;             /* Имя сервера/хоста */
-    gchar    *type_label;       /* Метка типа: "SFTP", "FTP", "WEBDAV", "S3" и т.д. */
-    gchar    *remote_path;      /* Кастомная стартовая папка (если задана) */
-    gboolean  is_rclone;        /* TRUE для rclone, FALSE для sshfs */
+    gchar    *name;             /* Server / Host name */
+    gchar    *type_label;       /* Type badge: "SFTP", "FTP", "WEBDAV", "S3", etc. */
+    gchar    *remote_path;      /* Custom starting directory (if set) */
+    gboolean  is_rclone;        /* TRUE for rclone, FALSE for sshfs */
 } RemoteServer;
 
 typedef struct {
@@ -52,7 +52,7 @@ typedef struct {
 } SshPasswordDialog;
 
 /* -------------------------------------------------------------------------- */
-/* Объявление структуры GObject-плагина                                       */
+/* GObject plugin structure declaration                                       */
 /* -------------------------------------------------------------------------- */
 
 typedef struct _NautilusTweaksMount {
@@ -75,7 +75,7 @@ static void nautilus_tweaks_mount_init (NautilusTweaksMount *self) {}
 static void nautilus_tweaks_mount_class_finalize (NautilusTweaksMountClass *klass) {}
 
 /* -------------------------------------------------------------------------- */
-/* Логирование в ~/.config/nautilus-tweaks/debug.log                          */
+/* Logging to ~/.config/nautilus-tweaks/debug.log                             */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -104,7 +104,7 @@ tweaks_log (const gchar *format, ...)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Вспомогательные функции работы с памятью и окнами                          */
+/* Memory and window helper functions                                         */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -150,7 +150,7 @@ get_nautilus_active_window (void)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Вспомогательные функции: Проверка монтирования                             */
+/* Mount verification helpers                                                 */
 /* -------------------------------------------------------------------------- */
 
 static gboolean
@@ -317,7 +317,7 @@ is_server_already_mounted (RemoteServer *s)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Парсинг конфигураций ~/.ssh/config и rclone.conf                           */
+/* Parsing ~/.ssh/config and rclone.conf                                      */
 /* -------------------------------------------------------------------------- */
 
 static GList *
@@ -443,7 +443,7 @@ reload_nautilus_views (void)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Монтирование серверов и обработка результатов                              */
+/* Mounting servers and handling results                                      */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -460,8 +460,8 @@ on_mount_communicated (GObject *source_object, GAsyncResult *res, gpointer user_
     gint exit_code = g_subprocess_get_exit_status (proc);
     gboolean success = (!err && g_subprocess_get_successful (proc));
 
-    tweaks_log ("Команда: %s", data->cmd_line);
-    tweaks_log ("Результат: exit_code=%d, success=%s", exit_code, success ? "TRUE" : "FALSE");
+    tweaks_log ("Command: %s", data->cmd_line);
+    tweaks_log ("Result: exit_code=%d, success=%s", exit_code, success ? "TRUE" : "FALSE");
     if (err)
         tweaks_log ("GError: %s", err->message);
     if (stdout_buf && strlen (stdout_buf) > 0)
@@ -471,7 +471,7 @@ on_mount_communicated (GObject *source_object, GAsyncResult *res, gpointer user_
 
     if (success)
     {
-        tweaks_log ("Монтирование успешно: %s -> %s", data->server_name, data->target_path);
+        tweaks_log ("Mount successful: %s -> %s", data->server_name, data->target_path);
         TweaksConfig *config = tweaks_config_load ();
         const gchar *emblem_name = (config->emblem && strlen (config->emblem) > 0) ? config->emblem : "globe";
         const gchar *emblems[] = { emblem_name, NULL };
@@ -488,7 +488,7 @@ on_mount_communicated (GObject *source_object, GAsyncResult *res, gpointer user_
     }
     else
     {
-        /* Извлекаем подробную причину из stderr для отображения в уведомлении */
+        /* Extract detailed reason from stderr for display in notification */
         g_autofree gchar *err_msg = NULL;
         if (stderr_buf && strlen (g_strstrip (stderr_buf)) > 0)
         {
@@ -500,16 +500,16 @@ on_mount_communicated (GObject *source_object, GAsyncResult *res, gpointer user_
         }
         else
         {
-            err_msg = g_strdup ("Процесс завершился с ошибкой (код != 0). См. ~/.config/nautilus-tweaks/debug.log");
+            err_msg = g_strdup (_("Process exited with an error (non-zero exit code). See ~/.config/nautilus-tweaks/debug.log"));
         }
 
-        tweaks_log ("Ошибка монтирования для %s: %s", data->server_name, err_msg);
+        tweaks_log ("Mount error for %s: %s", data->server_name, err_msg);
 
         const gchar *notify_argv[] = {
             "notify-send",
             "-u", "critical",
             "-i", "dialog-error",
-            "Ошибка подключения",
+            _("Connection Error"),
             err_msg,
             NULL
         };
@@ -557,11 +557,11 @@ start_mount_server_rclone (RemoteServer *target_server, const gchar *target_path
 
     if (spawn_err)
     {
-        tweaks_log ("Ошибка запуска rclone: %s", spawn_err->message);
+        tweaks_log ("Error launching rclone: %s", spawn_err->message);
         return;
     }
 
-    tweaks_log ("Запуск rclone: %s", cmd_desc);
+    tweaks_log ("Launching rclone: %s", cmd_desc);
 
     MountFinishData *mf_data = g_new0 (MountFinishData, 1);
     mf_data->target_path = g_strdup (target_path);
@@ -585,8 +585,8 @@ start_mount_server_sshfs (RemoteServer *target_server, const gchar *target_path,
         G_SUBPROCESS_FLAGS_STDERR_PIPE
     );
 
-    /* КРИТИЧНО: Принудительный C-locale для ssh, чтобы prompt всегда был "Password:",
-     * и запрет поиска сторонних askpass */
+    /* CRITICAL: Force C-locale for ssh so prompt is always "Password:",
+     * and prevent looking for external askpass */
     g_subprocess_launcher_setenv (launcher, "LC_ALL", "C", TRUE);
     g_subprocess_launcher_setenv (launcher, "SSH_ASKPASS_REQUIRE", "never", TRUE);
 
@@ -625,24 +625,24 @@ start_mount_server_sshfs (RemoteServer *target_server, const gchar *target_path,
 
     if (spawn_err)
     {
-        tweaks_log ("Ошибка spawn sshfs: %s", spawn_err->message);
+        tweaks_log ("Error spawning sshfs: %s", spawn_err->message);
         return;
     }
 
-    tweaks_log ("Запуск sshfs: %s (пароль передан: %s)", cmd_desc, (password && strlen (password) > 0) ? "ДА" : "НЕТ");
+    tweaks_log ("Launching sshfs: %s (password provided: %s)", cmd_desc, (password && strlen (password) > 0) ? "YES" : "NO");
 
     MountFinishData *mf_data = g_new0 (MountFinishData, 1);
     mf_data->target_path = g_strdup (target_path);
     mf_data->server_name = g_strdup (target_server->name);
     mf_data->cmd_line    = g_steal_pointer (&cmd_desc);
 
-    /* Асинхронно передаем пароль в stdin, считываем stdout/stderr и ждем завершения */
+    /* Asynchronously send password to stdin, read stdout/stderr and wait for exit */
     g_subprocess_communicate_utf8_async (mount_proc, pass_nl, NULL, on_mount_communicated, mf_data);
     g_object_unref (mount_proc);
 }
 
 /* -------------------------------------------------------------------------- */
-/* Нативное дочернее окно запроса пароля SSH                                  */
+/* Native child SSH password dialog                                           */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -672,7 +672,7 @@ show_ssh_password_dialog (RemoteServer *server, const gchar *target_path)
     pd->target_path = g_strdup (target_path);
 
     pd->window = gtk_window_new ();
-    g_autofree gchar *title = g_strdup_printf ("Аутентификация: %s", server->name);
+    g_autofree gchar *title = g_strdup_printf (_("Authentication: %s"), server->name);
     gtk_window_set_title (GTK_WINDOW (pd->window), title);
     gtk_window_set_default_size (GTK_WINDOW (pd->window), 380, 150);
     gtk_window_set_resizable (GTK_WINDOW (pd->window), FALSE);
@@ -693,7 +693,7 @@ show_ssh_password_dialog (RemoteServer *server, const gchar *target_path)
     gtk_widget_set_margin_bottom (box, 16);
     gtk_window_set_child (GTK_WINDOW (pd->window), box);
 
-    g_autofree gchar *prompt = g_strdup_printf ("Введите пароль для подключения к «%s»:", server->name);
+    g_autofree gchar *prompt = g_strdup_printf (_("Enter password to connect to \"%s\":"), server->name);
     GtkWidget *lbl = gtk_label_new (prompt);
     gtk_widget_set_halign (lbl, GTK_ALIGN_START);
     gtk_label_set_wrap (GTK_LABEL (lbl), TRUE);
@@ -707,8 +707,8 @@ show_ssh_password_dialog (RemoteServer *server, const gchar *target_path)
     GtkWidget *btn_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_set_halign (btn_box, GTK_ALIGN_END);
 
-    GtkWidget *btn_cancel = gtk_button_new_with_label ("Отмена");
-    GtkWidget *btn_connect = gtk_button_new_with_label ("Подключить");
+    GtkWidget *btn_cancel = gtk_button_new_with_label (_("Cancel"));
+    GtkWidget *btn_connect = gtk_button_new_with_label (_("Connect"));
     gtk_widget_add_css_class (btn_connect, "suggested-action");
 
     g_signal_connect_swapped (btn_cancel, "clicked", G_CALLBACK (gtk_window_destroy), pd->window);
@@ -736,19 +736,19 @@ on_ssh_check_finished (GObject *source_object, GAsyncResult *res, gpointer user_
     gint exit_code = g_subprocess_get_exit_status (proc);
     gboolean success = (!err && g_subprocess_get_successful (proc));
 
-    tweaks_log ("SSH pre-check (BatchMode) для '%s': exit_code=%d, success=%s",
+    tweaks_log ("SSH pre-check (BatchMode) for '%s': exit_code=%d, success=%s",
                 data->server->name, exit_code, success ? "TRUE" : "FALSE");
     if (stderr_buf && strlen (g_strstrip (stderr_buf)) > 0)
         tweaks_log ("SSH pre-check STDERR: %s", stderr_buf);
 
     if (success)
     {
-        tweaks_log ("SSH-ключ подошёл. Монтирование без пароля...");
+        tweaks_log ("SSH key accepted. Mounting without password...");
         start_mount_server_sshfs (data->server, data->target_path, NULL);
     }
     else
     {
-        tweaks_log ("SSH-ключ не подошёл (код %d). Открываем окно ввода пароля.", exit_code);
+        tweaks_log ("SSH key rejected (exit code %d). Prompting password dialog.", exit_code);
         show_ssh_password_dialog (data->server, data->target_path);
     }
 
@@ -758,7 +758,7 @@ on_ssh_check_finished (GObject *source_object, GAsyncResult *res, gpointer user_
 }
 
 /* -------------------------------------------------------------------------- */
-/* Диалоговое окно выбора сервера на GTK4                                     */
+/* GTK4 server selection dialog                                               */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -812,13 +812,13 @@ on_mount_connect_clicked (GtkButton *btn, gpointer user_data)
 
         if (check_proc)
         {
-            tweaks_log ("Проверка наличия рабочего SSH-ключа для '%s'...", check_data->server->name);
+            tweaks_log ("Checking SSH key for '%s'...", check_data->server->name);
             g_subprocess_communicate_utf8_async (check_proc, NULL, NULL, on_ssh_check_finished, check_data);
             g_object_unref (check_proc);
         }
         else
         {
-            tweaks_log ("Не удалось запустить ssh pre-check: %s. Показываем диалог пароля.", err ? err->message : "unknown");
+            tweaks_log ("Failed to launch ssh pre-check: %s. Showing password dialog.", err ? err->message : "unknown");
             show_ssh_password_dialog (check_data->server, check_data->target_path);
             remote_server_free (check_data->server);
             g_free (check_data->target_path);
@@ -864,8 +864,8 @@ on_mount_dialog_activated (NautilusMenuItem *item, gpointer user_data)
             "notify-send",
             "-u", "normal",
             "-i", "dialog-information",
-            "Удалённые серверы",
-            "Все настроенные серверы уже подключены или не найдены в конфигурациях",
+            _("Remote Servers"),
+            _("All configured servers are already connected or none were found in configurations"),
             NULL
         };
         g_spawn_async (NULL, (gchar **) notify_argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
@@ -878,14 +878,14 @@ on_mount_dialog_activated (NautilusMenuItem *item, gpointer user_data)
     d->selected_server = NULL;
 
     d->window = gtk_window_new ();
-    gtk_window_set_title (GTK_WINDOW (d->window), "Монтирование сервера");
+    gtk_window_set_title (GTK_WINDOW (d->window), _("Mount Server"));
     gtk_window_set_default_size (GTK_WINDOW (d->window), 390, 420);
     gtk_window_set_resizable (GTK_WINDOW (d->window), FALSE);
 
     GtkWindow *parent = get_nautilus_active_window ();
     if (parent)
     {
-        gtk_window_set_transient_for (GTK_WINDOW (d->window), parent);
+        gtk_window_set_transient_for (GTK_WINDOW (d->window), parent); // keep transient
         gtk_window_set_modal (GTK_WINDOW (d->window), TRUE);
     }
 
@@ -899,14 +899,14 @@ on_mount_dialog_activated (NautilusMenuItem *item, gpointer user_data)
     gtk_widget_set_margin_bottom (main_box, 16);
     gtk_window_set_child (GTK_WINDOW (d->window), main_box);
 
-    g_autofree gchar *target_str = g_strdup_printf ("Точка: %s", target_path);
+    g_autofree gchar *target_str = g_strdup_printf (_("Mount point: %s"), target_path);
     GtkWidget *lbl_target = gtk_label_new (target_str);
     gtk_widget_set_halign (lbl_target, GTK_ALIGN_START);
     gtk_label_set_ellipsize (GTK_LABEL (lbl_target), PANGO_ELLIPSIZE_START);
     gtk_widget_add_css_class (lbl_target, "dim-label");
     gtk_box_append (GTK_BOX (main_box), lbl_target);
 
-    GtkWidget *lbl_title = gtk_label_new ("Выберите сервер для подключения:");
+    GtkWidget *lbl_title = gtk_label_new (_("Select server to connect:"));
     gtk_widget_set_halign (lbl_title, GTK_ALIGN_START);
     gtk_box_append (GTK_BOX (main_box), lbl_title);
 
@@ -951,8 +951,8 @@ on_mount_dialog_activated (NautilusMenuItem *item, gpointer user_data)
     GtkWidget *btn_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_set_halign (btn_box, GTK_ALIGN_END);
 
-    GtkWidget *btn_cancel = gtk_button_new_with_label ("Отмена");
-    d->btn_connect = gtk_button_new_with_label ("Подключить");
+    GtkWidget *btn_cancel = gtk_button_new_with_label (_("Cancel"));
+    d->btn_connect = gtk_button_new_with_label (_("Connect"));
     gtk_widget_add_css_class (d->btn_connect, "suggested-action");
     gtk_widget_set_sensitive (d->btn_connect, FALSE);
 
@@ -982,22 +982,22 @@ on_unmount_ssh_activated (NautilusMenuItem *item, gpointer user_data)
     g_autofree gchar *err_out = NULL;
     gint exit_status = 0;
 
-    tweaks_log ("Размонтирование точки: %s", path);
+    tweaks_log ("Unmounting mount point: %s", path);
     g_spawn_command_line_sync (cmd, NULL, &err_out, &exit_status, NULL);
 
     if (exit_status != 0)
     {
         const gchar *msg = (err_out && strlen (g_strstrip (err_out)) > 0)
                            ? err_out
-                           : "Не удалось отмонтировать точку (возможно, каталог занят другим процессом)";
+                           : _("Failed to unmount point (directory might be busy with another process)");
 
-        tweaks_log ("Ошибка fusermount (код %d): %s", exit_status, msg);
+        tweaks_log ("Error in fusermount (exit code %d): %s", exit_status, msg);
 
         const gchar *notify_argv[] = {
             "notify-send",
             "-u", "critical",
             "-i", "dialog-error",
-            "Ошибка размонтирования",
+            _("Unmount Error"),
             msg,
             NULL
         };
@@ -1005,7 +1005,7 @@ on_unmount_ssh_activated (NautilusMenuItem *item, gpointer user_data)
     }
     else
     {
-        tweaks_log ("Размонтирование точки %s прошло успешно", path);
+        tweaks_log ("Mount point %s unmounted successfully", path);
         g_autoptr (GFile) unmounted_gfile = g_file_new_for_path (path);
         g_file_set_attribute (unmounted_gfile, "metadata::emblems",
                               G_FILE_ATTRIBUTE_TYPE_INVALID,
@@ -1018,7 +1018,7 @@ on_unmount_ssh_activated (NautilusMenuItem *item, gpointer user_data)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Контекстное меню                                                           */
+/* Context menu                                                               */
 /* -------------------------------------------------------------------------- */
 
 static GList *
@@ -1047,8 +1047,8 @@ nautilus_tweaks_mount_get_file_items (NautilusMenuProvider *provider, GList *fil
         g_autofree gchar *unmount_id = g_strdup_printf ("NautilusTweaks::Unmount_%u", ++g_mount_action_counter);
         NautilusMenuItem *unmount_item = nautilus_menu_item_new (
             unmount_id,
-            "Отмонтировать",
-            "Отмонтировать удалённый сервер",
+            _("Unmount"),
+            _("Unmount remote server"),
             "media-eject-symbolic"
         );
 
@@ -1064,8 +1064,8 @@ nautilus_tweaks_mount_get_file_items (NautilusMenuProvider *provider, GList *fil
         g_autofree gchar *mount_id = g_strdup_printf ("NautilusTweaks::Mount_%u", ++g_mount_action_counter);
         NautilusMenuItem *mount_item = nautilus_menu_item_new (
             mount_id,
-            "Примонтировать сервер...",
-            "Выбрать сервер из ~/.ssh/config или ~/.config/rclone/rclone.conf и примонтировать",
+            _("Mount Server..."),
+            _("Select server from ~/.ssh/config or ~/.config/rclone/rclone.conf and mount"),
             "network-server-symbolic"
         );
 

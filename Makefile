@@ -4,13 +4,14 @@ install:
 	@./install.sh
 
 uninstall:
-	@echo "==> Удаление всех модулей Nautilus Tweaks..."
+	@echo "==> Removing Nautilus Tweaks..."
 	@rm -f /usr/lib/nautilus/extensions-4/libnautilus-tweaks-*.so
+	@rm -f /usr/share/locale/*/LC_MESSAGES/nautilus-tweaks.mo
 	@rm -f libnautilus-tweaks-*.so
-	@echo "==> Успешно удалено."
+	@echo "==> Successfully uninstalled."
 
 clean:
 	@rm -f libnautilus-tweaks-*.so
-	@echo "==> Папка очищена."
+	@echo "==> Directory cleaned."
 
 .PHONY: all install uninstall clean

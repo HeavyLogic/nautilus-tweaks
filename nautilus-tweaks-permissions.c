@@ -15,7 +15,7 @@ static guint g_permissions_action_counter = 0;
 static GtkWidget *g_active_dialog_window = NULL;
 
 /* -------------------------------------------------------------------------- */
-/* Типы файловых систем и данные монтирования                                 */
+/* Filesystem types and mount data                                            */
 /* -------------------------------------------------------------------------- */
 
 typedef enum {
@@ -43,7 +43,7 @@ mount_info_free (MountInfo *info)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Логирование в ~/.config/nautilus-tweaks/debug.log                          */
+/* Logging to ~/.config/nautilus-tweaks/debug.log                             */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -73,7 +73,7 @@ log_debug (const gchar *format, ...)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Определение режима ФС через /proc/mounts                                   */
+/* Filesystem mode detection via /proc/mounts                                 */
 /* -------------------------------------------------------------------------- */
 
 static MountInfo *
@@ -160,7 +160,7 @@ translate_to_remote_path (const gchar *local_path, MountInfo *info)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Структура данных виджетов                                                  */
+/* Widget data structure                                                      */
 /* -------------------------------------------------------------------------- */
 
 typedef struct {
@@ -168,14 +168,14 @@ typedef struct {
     GList     *target_paths;
     MountInfo *mount_info;
 
-    /* Стек переключения (Загрузка <-> Форма) */
+    /* Stack switching (Loading <-> Form) */
     GtkWidget *stack_pages;
     GtkWidget *spinner;
     GtkWidget *lbl_loading;
 
     GtkWidget *lbl_target_path;
 
-    /* Выпадающие списки */
+    /* Dropdown selectors */
     GtkWidget     *combo_owner_compact;
     GtkWidget     *combo_owner_full;
     GtkStringList *owners_compact_model;
@@ -186,10 +186,10 @@ typedef struct {
     GtkStringList *groups_compact_model;
     GtkStringList *groups_full_model;
 
-    /* Чекбокс показа всех пользователей/групп */
+    /* Checkbox to show all users and groups */
     GtkWidget *chk_show_all;
 
-    /* Чекбоксы прав (3x4) */
+    /* Permission checkboxes (3x4) */
     GtkWidget *chk_u_r;
     GtkWidget *chk_u_w;
     GtkWidget *chk_u_x;
@@ -205,7 +205,7 @@ typedef struct {
     GtkWidget *chk_o_x;
     GtkWidget *chk_o_sticky;
 
-    /* Octal и дополнительные опции */
+    /* Octal entry and extra options */
     GtkWidget *entry_octal;
     GtkWidget *chk_add_x;
     GtkWidget *chk_recursive;
@@ -214,7 +214,7 @@ typedef struct {
 } PermissionsDialogWidgets;
 
 /* -------------------------------------------------------------------------- */
-/* GObject объявление плагина                                                 */
+/* GObject plugin declaration                                                 */
 /* -------------------------------------------------------------------------- */
 
 typedef struct _NautilusTweaksPermissions {
@@ -237,7 +237,7 @@ static void nautilus_tweaks_permissions_init (NautilusTweaksPermissions *self) {
 static void nautilus_tweaks_permissions_class_finalize (NautilusTweaksPermissionsClass *klass) {}
 
 /* -------------------------------------------------------------------------- */
-/* Обновление вида Nautilus                                                   */
+/* Reload Nautilus views                                                      */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -261,7 +261,7 @@ reload_nautilus_views (void)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Живой пересчёт Octal <-> Чекбоксы                                          */
+/* Live sync between Octal and Checkboxes                                     */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -352,7 +352,7 @@ on_octal_entry_changed (GtkEditable *editable, gpointer user_data)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Формирование списков пользователей и групп                                 */
+/* Building user and group lists                                              */
 /* -------------------------------------------------------------------------- */
 
 static gboolean
@@ -448,7 +448,7 @@ select_in_string_list (GtkWidget *dropdown, GtkStringList *model, const gchar *t
 }
 
 /* -------------------------------------------------------------------------- */
-/* Создание GtkDropDown со встроенным поиском (GtkPropertyExpression)          */
+/* Create searchable GtkDropDown (GtkPropertyExpression)                      */
 /* -------------------------------------------------------------------------- */
 
 static GtkWidget *
@@ -462,7 +462,7 @@ create_searchable_dropdown (GtkStringList *model)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Переключение между Компактным и Полным списком (без падений)               */
+/* Switch between Compact and Full list                                       */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -473,7 +473,7 @@ on_show_all_toggled (GtkCheckButton *btn, gpointer user_data)
 
     if (show_all)
     {
-        /* Синхронизируем выбор из compact в full */
+        /* Sync selection from compact to full */
         guint u_idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (w->combo_owner_compact));
         const gchar *u_str = gtk_string_list_get_string (w->owners_compact_model, u_idx);
         select_in_string_list (w->combo_owner_full, w->owners_full_model, u_str);
@@ -484,7 +484,7 @@ on_show_all_toggled (GtkCheckButton *btn, gpointer user_data)
     }
     else
     {
-        /* Синхронизируем выбор из full в compact */
+        /* Sync selection from full to compact */
         guint u_idx = gtk_drop_down_get_selected (GTK_DROP_DOWN (w->combo_owner_full));
         const gchar *u_str = gtk_string_list_get_string (w->owners_full_model, u_idx);
         select_in_string_list (w->combo_owner_compact, w->owners_compact_model, u_str);
@@ -501,7 +501,7 @@ on_show_all_toggled (GtkCheckButton *btn, gpointer user_data)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Асинхронное выполнение команды изменения прав                              */
+/* Asynchronous execution of permission change command                        */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -523,13 +523,13 @@ on_permissions_proc_finished (GObject *source_object, GAsyncResult *res, gpointe
 
     if (!err && g_subprocess_get_successful (proc))
     {
-        log_debug ("[SUCCESS] Права успешно обновлены");
+        log_debug ("[SUCCESS] Permissions updated successfully");
         const gchar *notify_argv[] = {
             "notify-send",
             "-u", "normal",
             "-i", "dialog-information",
-            "Права доступа",
-            "Права и владелец успешно обновлены",
+            _("Permissions"),
+            _("Permissions and owner updated successfully"),
             NULL
         };
         g_spawn_async (NULL, (gchar **) notify_argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
@@ -544,7 +544,7 @@ on_permissions_proc_finished (GObject *source_object, GAsyncResult *res, gpointe
         else if (err)
             err_msg = g_strdup (err->message);
         else
-            err_msg = g_strdup ("Операция отменена пользователем или ошибка доступа");
+            err_msg = g_strdup (_("Operation cancelled by user or permission denied"));
 
         log_debug ("[ERROR] %s", err_msg);
 
@@ -552,7 +552,7 @@ on_permissions_proc_finished (GObject *source_object, GAsyncResult *res, gpointe
             "notify-send",
             "-u", "critical",
             "-i", "dialog-error",
-            "Ошибка изменения прав",
+            _("Error Changing Permissions"),
             err_msg,
             NULL
         };
@@ -705,7 +705,7 @@ on_dialog_destroyed (gpointer data, GObject *where_the_object_was)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Асинхронное получение данных (Stat + Passwd + Groups)                      */
+/* Asynchronous data loading (Stat + Passwd + Groups)                         */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -811,7 +811,7 @@ populate_models_from_parsed_data (PermissionsDialogWidgets *w,
         g_strfreev (lines);
     }
 
-    /* Кастомные записи из config.ini */
+    /* Custom entries from config.ini */
     TweaksConfig *config = tweaks_config_load ();
     if (config && config->extra_users)
     {
@@ -847,11 +847,11 @@ populate_models_from_parsed_data (PermissionsDialogWidgets *w,
     g_hash_table_destroy (seen_g_c);
     g_hash_table_destroy (seen_g_f);
 
-    /* Автовыбор активного пользователя и группы */
+    /* Select active user and group */
     select_in_string_list (w->combo_owner_compact, w->owners_compact_model, initial_owner ? initial_owner : "root");
     select_in_string_list (w->combo_group_compact, w->groups_compact_model, initial_group ? initial_group : "root");
 
-    /* Останавливаем спиннер и показываем форму */
+    /* Stop spinner and display form */
     gtk_spinner_stop (GTK_SPINNER (w->spinner));
     gtk_stack_set_visible_child_name (GTK_STACK (w->stack_pages), "form");
 }
@@ -876,7 +876,7 @@ on_remote_load_finished (GObject *source_object, GAsyncResult *res, gpointer use
 
     if (!err && g_subprocess_get_successful (proc) && stdout_buf)
     {
-        /* Парсим секции */
+        /* Parse sections */
         gchar **sections = g_strsplit (stdout_buf, "===PASSWD===\n", 2);
         gchar *stat_part = sections[0];
         gchar *rest = sections[1];
@@ -953,7 +953,7 @@ start_async_data_load (PermissionsDialogWidgets *w, const gchar *first_path)
         }
     }
 
-    /* Локальная загрузка */
+    /* Local data fetch */
     g_autofree gchar *initial_owner = NULL;
     g_autofree gchar *initial_group = NULL;
     mode_t initial_mode = 0755;
@@ -982,7 +982,7 @@ start_async_data_load (PermissionsDialogWidgets *w, const gchar *first_path)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Построение окна интерфейса                                                 */
+/* UI window construction                                                     */
 /* -------------------------------------------------------------------------- */
 
 static GtkWidget *
@@ -1020,18 +1020,18 @@ create_permissions_window (GList *files)
     w->groups_full_model    = gtk_string_list_new (NULL);
 
     w->window = gtk_window_new ();
-    gtk_window_set_title (GTK_WINDOW (w->window), "Permissions");
+    gtk_window_set_title (GTK_WINDOW (w->window), _("Permissions"));
     gtk_window_set_resizable (GTK_WINDOW (w->window), FALSE);
     gtk_window_set_default_size (GTK_WINDOW (w->window), 450, -1);
 
     g_object_weak_ref (G_OBJECT (w->window), on_dialog_destroyed, w);
 
-    /* Стек: Загрузка vs Форма */
+    /* Stack: Loading vs Form */
     w->stack_pages = gtk_stack_new ();
     gtk_stack_set_transition_type (GTK_STACK (w->stack_pages), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
     gtk_window_set_child (GTK_WINDOW (w->window), w->stack_pages);
 
-    /* --- СТРАНИЦА 1: Загрузка (Spinner) --- */
+    /* --- PAGE 1: Loading (Spinner) --- */
     GtkWidget *loading_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 16);
     gtk_widget_set_valign (loading_box, GTK_ALIGN_CENTER);
     gtk_widget_set_halign (loading_box, GTK_ALIGN_CENTER);
@@ -1047,15 +1047,15 @@ create_permissions_window (GList *files)
 
     w->lbl_loading = gtk_label_new (
         (w->mount_info->mode == FS_MODE_SSHFS)
-        ? "Загрузка пользователей и прав с сервера..."
-        : "Чтение прав доступа..."
+        ? _("Loading users and permissions from server...")
+        : _("Reading permissions...")
     );
     gtk_widget_add_css_class (w->lbl_loading, "dim-label");
     gtk_box_append (GTK_BOX (loading_box), w->lbl_loading);
 
     gtk_stack_add_named (GTK_STACK (w->stack_pages), loading_box, "loading");
 
-    /* --- СТРАНИЦА 2: Основная форма --- */
+    /* --- PAGE 2: Main Form --- */
     GtkWidget *form_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
     gtk_widget_set_margin_start (form_box, 16);
     gtk_widget_set_margin_end (form_box, 16);
@@ -1063,7 +1063,7 @@ create_permissions_window (GList *files)
     gtk_widget_set_margin_bottom (form_box, 16);
     gtk_stack_add_named (GTK_STACK (w->stack_pages), form_box, "form");
 
-    /* 0. Целевой путь */
+    /* 0. Target path header */
     g_autofree gchar *target_label_text = NULL;
     guint target_count = g_list_length (w->target_paths);
     if (target_count == 1 && first_path)
@@ -1071,16 +1071,16 @@ create_permissions_window (GList *files)
         if (w->mount_info->mode == FS_MODE_SSHFS && w->mount_info->ssh_host)
         {
             g_autofree gchar *rem = translate_to_remote_path (first_path, w->mount_info);
-            target_label_text = g_strdup_printf ("Target (SSH: %s): %s", w->mount_info->ssh_host, rem);
+            target_label_text = g_strdup_printf (_("Target (SSH: %s): %s"), w->mount_info->ssh_host, rem);
         }
         else
         {
-            target_label_text = g_strdup_printf ("Target: %s", first_path);
+            target_label_text = g_strdup_printf (_("Target: %s"), first_path);
         }
     }
     else
     {
-        target_label_text = g_strdup_printf ("Selected: %u items", target_count);
+        target_label_text = g_strdup_printf (_("Selected: %u items"), target_count);
     }
 
     w->lbl_target_path = gtk_label_new (target_label_text);
@@ -1089,12 +1089,12 @@ create_permissions_window (GList *files)
     gtk_widget_add_css_class (w->lbl_target_path, "dim-label");
     gtk_box_append (GTK_BOX (form_box), w->lbl_target_path);
 
-    /* 1. Блок Owner / Group (Два независимых выпадающих списка с поиском) */
+    /* 1. Owner / Group (Two independent searchable dropdowns) */
     GtkWidget *grid_top = gtk_grid_new ();
     gtk_grid_set_column_spacing (GTK_GRID (grid_top), 12);
     gtk_grid_set_row_spacing (GTK_GRID (grid_top), 8);
 
-    GtkWidget *lbl_owner = gtk_label_new ("Owner:");
+    GtkWidget *lbl_owner = gtk_label_new (_("Owner:"));
     gtk_widget_set_halign (lbl_owner, GTK_ALIGN_START);
     gtk_grid_attach (GTK_GRID (grid_top), lbl_owner, 0, 0, 1, 1);
 
@@ -1104,7 +1104,7 @@ create_permissions_window (GList *files)
     gtk_grid_attach (GTK_GRID (grid_top), w->combo_owner_compact, 1, 0, 1, 1);
     gtk_grid_attach (GTK_GRID (grid_top), w->combo_owner_full, 1, 0, 1, 1);
 
-    GtkWidget *lbl_group = gtk_label_new ("Group:");
+    GtkWidget *lbl_group = gtk_label_new (_("Group:"));
     gtk_widget_set_halign (lbl_group, GTK_ALIGN_START);
     gtk_grid_attach (GTK_GRID (grid_top), lbl_group, 0, 1, 1, 1);
 
@@ -1116,27 +1116,27 @@ create_permissions_window (GList *files)
 
     gtk_box_append (GTK_BOX (form_box), grid_top);
 
-    /* Чекбокс «Показать всех» */
-    w->chk_show_all = gtk_check_button_new_with_label ("Показать всех пользователей и группы");
+    /* "Show all" checkbox */
+    w->chk_show_all = gtk_check_button_new_with_label (_("Show all users and groups"));
     g_signal_connect (w->chk_show_all, "toggled", G_CALLBACK (on_show_all_toggled), w);
     gtk_box_append (GTK_BOX (form_box), w->chk_show_all);
 
     gtk_box_append (GTK_BOX (form_box), gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
 
-    /* 2. Блок Permissions */
+    /* 2. Permissions block */
     GtkWidget *grid_perm = gtk_grid_new ();
     gtk_grid_set_column_spacing (GTK_GRID (grid_perm), 12);
     gtk_grid_set_row_spacing (GTK_GRID (grid_perm), 6);
 
-    GtkWidget *lbl_perm_title = gtk_label_new ("Permissions:");
+    GtkWidget *lbl_perm_title = gtk_label_new (_("Permissions:"));
     gtk_widget_set_halign (lbl_perm_title, GTK_ALIGN_START);
     gtk_widget_set_valign (lbl_perm_title, GTK_ALIGN_START);
     gtk_grid_attach (GTK_GRID (grid_perm), lbl_perm_title, 0, 0, 1, 5);
 
-    GtkWidget *lbl_u = gtk_label_new_with_mnemonic ("_Owner");
-    GtkWidget *lbl_g = gtk_label_new_with_mnemonic ("_Group");
-    GtkWidget *lbl_o = gtk_label_new_with_mnemonic ("Ot_hers");
-    GtkWidget *lbl_octal = gtk_label_new_with_mnemonic ("O_ctal:");
+    GtkWidget *lbl_u = gtk_label_new_with_mnemonic (_("_Owner"));
+    GtkWidget *lbl_g = gtk_label_new_with_mnemonic (_("_Group"));
+    GtkWidget *lbl_o = gtk_label_new_with_mnemonic (_("Ot_hers"));
+    GtkWidget *lbl_octal = gtk_label_new_with_mnemonic (_("O_ctal:"));
     gtk_widget_set_halign (lbl_u, GTK_ALIGN_START);
     gtk_widget_set_halign (lbl_g, GTK_ALIGN_START);
     gtk_widget_set_halign (lbl_o, GTK_ALIGN_START);
@@ -1147,31 +1147,31 @@ create_permissions_window (GList *files)
     gtk_grid_attach (GTK_GRID (grid_perm), lbl_o, 1, 2, 1, 1);
     gtk_grid_attach (GTK_GRID (grid_perm), lbl_octal, 1, 3, 1, 1);
 
-    /* Чекбоксы Owner */
+    /* Owner checkboxes */
     w->chk_u_r    = gtk_check_button_new_with_label ("R");
     w->chk_u_w    = gtk_check_button_new_with_label ("W");
     w->chk_u_x    = gtk_check_button_new_with_label ("X");
-    w->chk_u_suid = gtk_check_button_new_with_label ("Set UID");
+    w->chk_u_suid = gtk_check_button_new_with_label (_("Set UID"));
     gtk_grid_attach (GTK_GRID (grid_perm), w->chk_u_r,    2, 0, 1, 1);
     gtk_grid_attach (GTK_GRID (grid_perm), w->chk_u_w,    3, 0, 1, 1);
     gtk_grid_attach (GTK_GRID (grid_perm), w->chk_u_x,    4, 0, 1, 1);
     gtk_grid_attach (GTK_GRID (grid_perm), w->chk_u_suid, 5, 0, 1, 1);
 
-    /* Чекбоксы Group */
+    /* Group checkboxes */
     w->chk_g_r    = gtk_check_button_new_with_label ("R");
     w->chk_g_w    = gtk_check_button_new_with_label ("W");
     w->chk_g_x    = gtk_check_button_new_with_label ("X");
-    w->chk_g_sgid = gtk_check_button_new_with_label ("Set GID");
+    w->chk_g_sgid = gtk_check_button_new_with_label (_("Set GID"));
     gtk_grid_attach (GTK_GRID (grid_perm), w->chk_g_r,    2, 1, 1, 1);
     gtk_grid_attach (GTK_GRID (grid_perm), w->chk_g_w,    3, 1, 1, 1);
     gtk_grid_attach (GTK_GRID (grid_perm), w->chk_g_x,    4, 1, 1, 1);
     gtk_grid_attach (GTK_GRID (grid_perm), w->chk_g_sgid, 5, 1, 1, 1);
 
-    /* Чекбоксы Others */
+    /* Others checkboxes */
     w->chk_o_r      = gtk_check_button_new_with_label ("R");
     w->chk_o_w      = gtk_check_button_new_with_label ("W");
     w->chk_o_x      = gtk_check_button_new_with_label ("X");
-    w->chk_o_sticky = gtk_check_button_new_with_label ("Sticky bit");
+    w->chk_o_sticky = gtk_check_button_new_with_label (_("Sticky bit"));
     gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_r,      2, 2, 1, 1);
     gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_w,      3, 2, 1, 1);
     gtk_grid_attach (GTK_GRID (grid_perm), w->chk_o_x,      4, 2, 1, 1);
@@ -1183,23 +1183,23 @@ create_permissions_window (GList *files)
     gtk_grid_attach (GTK_GRID (grid_perm), w->entry_octal, 2, 3, 2, 1);
 
     /* Add X to directories */
-    w->chk_add_x = gtk_check_button_new_with_mnemonic ("Add _X to directories");
+    w->chk_add_x = gtk_check_button_new_with_mnemonic (_("Add _X to directories"));
     gtk_grid_attach (GTK_GRID (grid_perm), w->chk_add_x, 2, 4, 4, 1);
 
     gtk_box_append (GTK_BOX (form_box), grid_perm);
     gtk_box_append (GTK_BOX (form_box), gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
 
-    /* 3. Чекбокс рекурсивности */
-    w->chk_recursive = gtk_check_button_new_with_mnemonic ("Set owner, group and permissions _recursively");
+    /* 3. Recursive checkbox */
+    w->chk_recursive = gtk_check_button_new_with_mnemonic (_("Set owner, group and permissions _recursively"));
     gtk_box_append (GTK_BOX (form_box), w->chk_recursive);
 
-    /* 4. Кнопки Отмена / Применить */
+    /* 4. Cancel / Apply buttons */
     GtkWidget *btn_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_set_halign (btn_box, GTK_ALIGN_END);
     gtk_widget_set_margin_top (btn_box, 8);
 
-    GtkWidget *btn_cancel = gtk_button_new_with_label ("Отмена");
-    GtkWidget *btn_apply  = gtk_button_new_with_label ("Применить");
+    GtkWidget *btn_cancel = gtk_button_new_with_label (_("Cancel"));
+    GtkWidget *btn_apply  = gtk_button_new_with_label (_("Apply"));
     gtk_widget_add_css_class (btn_apply, "suggested-action");
 
     g_signal_connect_swapped (btn_cancel, "clicked", G_CALLBACK (gtk_window_destroy), w->window);
@@ -1209,7 +1209,7 @@ create_permissions_window (GList *files)
     gtk_box_append (GTK_BOX (btn_box), btn_apply);
     gtk_box_append (GTK_BOX (form_box), btn_box);
 
-    /* Подключаем сигналы пересчёта */
+    /* Connect recalculation signals */
     GtkWidget *all_checks[] = {
         w->chk_u_r, w->chk_u_w, w->chk_u_x, w->chk_u_suid,
         w->chk_g_r, w->chk_g_w, w->chk_g_x, w->chk_g_sgid,
@@ -1222,14 +1222,14 @@ create_permissions_window (GList *files)
 
     g_signal_connect (w->entry_octal, "changed", G_CALLBACK (on_octal_entry_changed), w);
 
-    /* Запускаем фоновую загрузку данных */
+    /* Start background data fetch */
     start_async_data_load (w, first_path);
 
     return w->window;
 }
 
 /* -------------------------------------------------------------------------- */
-/* Контекстное меню для выбранных файлов/папок                                */
+/* Context menu for selected files/folders                                    */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -1275,8 +1275,8 @@ nautilus_tweaks_permissions_get_file_items (NautilusMenuProvider *provider, GLis
 
     NautilusMenuItem *perm_item = nautilus_menu_item_new (
         perm_id,
-        "Права...",
-        "Изменить владельца, группу и права доступа (chmod/chown)",
+        _("Permissions..."),
+        _("Change owner, group and permissions (chmod/chown)"),
         "dialog-password-symbolic"
     );
 
@@ -1290,7 +1290,7 @@ nautilus_tweaks_permissions_get_file_items (NautilusMenuProvider *provider, GLis
 }
 
 /* -------------------------------------------------------------------------- */
-/* Контекстное меню пустого пространства (Background Menu)                    */
+/* Background context menu                                                    */
 /* -------------------------------------------------------------------------- */
 
 static GList *
@@ -1321,8 +1321,8 @@ nautilus_tweaks_permissions_get_background_items (NautilusMenuProvider *provider
 
     NautilusMenuItem *perm_item = nautilus_menu_item_new (
         bg_perm_id,
-        "Права...",
-        "Изменить владельца, группу и права доступа текущей папки (chmod/chown)",
+        _("Permissions..."),
+        _("Change owner, group and permissions of current folder (chmod/chown)"),
         "dialog-password-symbolic"
     );
 
@@ -1338,7 +1338,7 @@ nautilus_tweaks_permissions_get_background_items (NautilusMenuProvider *provider
 }
 
 /* -------------------------------------------------------------------------- */
-/* Инициализация модуля расширения Nautilus                                   */
+/* Nautilus extension module initialization                                   */
 /* -------------------------------------------------------------------------- */
 
 static void

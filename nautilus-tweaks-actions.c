@@ -9,11 +9,11 @@
 
 #include "tweaks-config.h"
 
-/* Счётчик для генерации уникальных ID пунктов меню */
+/* Counter for generating unique menu item IDs */
 static guint g_action_counter = 0;
 
 /* -------------------------------------------------------------------------- */
-/* Объявление структуры GObject-плагина                                       */
+/* GObject plugin structure declaration                                       */
 /* -------------------------------------------------------------------------- */
 
 typedef struct _NautilusTweaksActions {
@@ -36,7 +36,7 @@ static void nautilus_tweaks_actions_init (NautilusTweaksActions *self) {}
 static void nautilus_tweaks_actions_class_finalize (NautilusTweaksActionsClass *klass) {}
 
 /* -------------------------------------------------------------------------- */
-/* Вспомогательный хелпер: Запуск команд в терминале                           */
+/* Helper: Launch commands in terminal                                        */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -75,7 +75,7 @@ launch_in_terminal (const gchar *terminal, const gchar *command)
         g_ptr_array_add (argv_array, "-e");
         g_ptr_array_add (argv_array, (gchar *) command);
     }
-    /* kitty и foot */
+    /* kitty and foot */
     else if (g_strcmp0 (last_token, "kitty") == 0 || g_strcmp0 (last_token, "foot") == 0)
     {
         g_ptr_array_add (argv_array, "sh");
@@ -100,7 +100,7 @@ launch_in_terminal (const gchar *terminal, const gchar *command)
 }
 
 /* -------------------------------------------------------------------------- */
-/* 1. Действие: Копирование пути                                              */
+/* 1. Action: Copy path                                                       */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -128,7 +128,7 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
 
         g_autofree gchar *target_path = NULL;
 
-        /* Резолв симлинка */
+        /* Resolve symlink */
         if (config->resolve_symlinks && g_file_test (path, G_FILE_TEST_IS_SYMLINK))
         {
             char *resolved = realpath (path, NULL);
@@ -156,8 +156,8 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
                         "notify-send",
                         "-u", "critical",
                         "-i", "dialog-warning",
-                        "Битый симлинк",
-                        "Конечный файл не существует, но ссылка всё равно скопирована в буфер",
+                        _("Broken Symlink"),
+                        _("Target file does not exist, but link path was copied to clipboard"),
                         NULL
                     };
                     g_spawn_async (NULL, (gchar **) notify_argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
@@ -171,7 +171,7 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
             g_string_append_c (text, '\n');
         first = FALSE;
 
-        /* Сокращение $HOME до ~ */
+        /* Shorten $HOME to ~ */
         if (config->shorten_home && home && g_strcmp0 (final_path, home) == 0)
         {
             g_string_append (text, "~");
@@ -202,7 +202,7 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
 }
 
 /* -------------------------------------------------------------------------- */
-/* 2. Действие: Открыть папку в VS Code                                       */
+/* 2. Action: Open folder in VS Code                                          */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -214,7 +214,7 @@ on_open_in_code_activated (NautilusMenuItem *item, gpointer user_data)
 }
 
 /* -------------------------------------------------------------------------- */
-/* 3. Действие: Открыть / Редактировать как root                              */
+/* 3. Action: Open / Edit as root                                             */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -247,7 +247,7 @@ on_open_as_root_activated (NautilusMenuItem *item, gpointer user_data)
 }
 
 /* -------------------------------------------------------------------------- */
-/* 4. Контекстное меню для выбранных файлов/папок                             */
+/* 4. Context menu for selected files/folders                                 */
 /* -------------------------------------------------------------------------- */
 
 static GList *
@@ -261,26 +261,26 @@ nautilus_tweaks_actions_get_file_items (NautilusMenuProvider *provider, GList *f
 
     TweaksConfig *config = tweaks_config_load ();
 
-    /* --- Пункт 1: Копировать путь --- */
+    /* --- Item 1: Copy path --- */
     g_autofree gchar *copy_label = NULL;
     if (len == 1)
     {
         NautilusFileInfo *first_file = NAUTILUS_FILE_INFO (files->data);
         if (nautilus_file_info_is_directory (first_file))
-            copy_label = g_strdup ("Копировать путь к папке");
+            copy_label = g_strdup (_("Copy Folder Path"));
         else
-            copy_label = g_strdup ("Копировать путь к файлу");
+            copy_label = g_strdup (_("Copy File Path"));
     }
     else
     {
-        copy_label = g_strdup_printf ("Копировать пути (%u)", len);
+        copy_label = g_strdup_printf (_("Copy Paths (%u)"), len);
     }
 
     g_autofree gchar *copy_id = g_strdup_printf ("NautilusTweaks::CopyPath_%u", ++g_action_counter);
     NautilusMenuItem *copy_item = nautilus_menu_item_new (
         copy_id,
         copy_label,
-        "Копирует путь в буфер обмена",
+        _("Copy path to clipboard"),
         "edit-copy-symbolic"
     );
 
@@ -291,7 +291,7 @@ nautilus_tweaks_actions_get_file_items (NautilusMenuProvider *provider, GList *f
 
     items = g_list_append (items, copy_item);
 
-    /* --- Блок для одного выбранного объекта --- */
+    /* --- Block for single selection --- */
     if (len == 1)
     {
         NautilusFileInfo *first_file = NAUTILUS_FILE_INFO (files->data);
@@ -299,14 +299,14 @@ nautilus_tweaks_actions_get_file_items (NautilusMenuProvider *provider, GList *f
         g_autoptr (GFile) location = nautilus_file_info_get_location (first_file);
         g_autofree gchar *target_path = location ? g_file_get_path (location) : NULL;
 
-        /* --- Пункт 2: Открыть папку в VS Code (только для папок) --- */
+        /* --- Item 2: Open folder in VS Code (directories only) --- */
         if (is_dir && target_path)
         {
             g_autofree gchar *code_id = g_strdup_printf ("NautilusTweaks::OpenInCode_%u", ++g_action_counter);
             NautilusMenuItem *code_item = nautilus_menu_item_new (
                 code_id,
-                "Открыть папку в VS Code",
-                "Открыть эту директорию как проект в VS Code",
+                _("Open in VS Code"),
+                _("Open this directory as a project in VS Code"),
                 "com.visualstudio.code"
             );
 
@@ -318,15 +318,15 @@ nautilus_tweaks_actions_get_file_items (NautilusMenuProvider *provider, GList *f
             items = g_list_append (items, code_item);
         }
 
-        /* --- Пункт 3: Открыть / Редактировать как root --- */
+        /* --- Item 3: Open / Edit as root --- */
         g_autofree gchar *root_label = NULL;
         if (is_dir)
-            root_label = g_strdup ("Открыть как root");
+            root_label = g_strdup (_("Open as Root"));
         else
-            root_label = g_strdup_printf ("Редактировать как root (%s)", config->editor);
+            root_label = g_strdup_printf (_("Edit as Root (%s)"), config->editor);
 
-        const gchar *root_tip   = is_dir ? "Открыть эту папку в Nautilus с правами администратора"
-                                         : "Редактировать файл в консольном редакторе от имени root";
+        const gchar *root_tip   = is_dir ? _("Open this folder in Nautilus with administrator privileges")
+                                         : _("Edit file in console editor as root");
         const gchar *root_icon  = is_dir ? "folder-remote-symbolic" : "accessories-text-editor-symbolic";
 
         g_autofree gchar *root_id = g_strdup_printf ("NautilusTweaks::OpenAsRoot_%u", ++g_action_counter);
@@ -350,7 +350,7 @@ nautilus_tweaks_actions_get_file_items (NautilusMenuProvider *provider, GList *f
 }
 
 /* -------------------------------------------------------------------------- */
-/* 5. Контекстное меню пустого пространства (Background Menu)                  */
+/* 5. Background context menu                                                 */
 /* -------------------------------------------------------------------------- */
 
 static GList *
@@ -370,12 +370,12 @@ nautilus_tweaks_actions_get_background_items (NautilusMenuProvider *provider,
 
     GList *items = NULL;
 
-    /* 1. Копировать путь к текущей папке */
+    /* 1. Copy current folder path */
     g_autofree gchar *bg_copy_id = g_strdup_printf ("NautilusTweaks::BgCopyPath_%u", ++g_action_counter);
     NautilusMenuItem *copy_item = nautilus_menu_item_new (
         bg_copy_id,
-        "Копировать путь к папке",
-        "Копирует путь текущей папки в буфер обмена",
+        _("Copy Folder Path"),
+        _("Copy current folder path to clipboard"),
         "edit-copy-symbolic"
     );
 
@@ -387,12 +387,12 @@ nautilus_tweaks_actions_get_background_items (NautilusMenuProvider *provider,
     g_list_free (single_list);
     items = g_list_append (items, copy_item);
 
-    /* 2. Открыть текущую папку в VS Code */
+    /* 2. Open current folder in VS Code */
     g_autofree gchar *bg_code_id = g_strdup_printf ("NautilusTweaks::BgOpenInCode_%u", ++g_action_counter);
     NautilusMenuItem *code_item = nautilus_menu_item_new (
         bg_code_id,
-        "Открыть папку в VS Code",
-        "Открыть текущую директорию как проект в VS Code",
+        _("Open in VS Code"),
+        _("Open current directory as a project in VS Code"),
         "com.visualstudio.code"
     );
 
@@ -402,12 +402,12 @@ nautilus_tweaks_actions_get_background_items (NautilusMenuProvider *provider,
                            (GClosureNotify) g_free, 0);
     items = g_list_append (items, code_item);
 
-    /* 3. Открыть текущую папку как root */
+    /* 3. Open current folder as root */
     g_autofree gchar *bg_root_id = g_strdup_printf ("NautilusTweaks::BgOpenAsRoot_%u", ++g_action_counter);
     NautilusMenuItem *root_item = nautilus_menu_item_new (
         bg_root_id,
-        "Открыть как root",
-        "Открыть текущую папку в Nautilus с правами администратора",
+        _("Open as Root"),
+        _("Open current folder in Nautilus with administrator privileges"),
         "folder-remote-symbolic"
     );
 
@@ -421,7 +421,7 @@ nautilus_tweaks_actions_get_background_items (NautilusMenuProvider *provider,
 }
 
 /* -------------------------------------------------------------------------- */
-/* Инициализация модуля расширения Nautilus                                   */
+/* Nautilus extension module initialization                                   */
 /* -------------------------------------------------------------------------- */
 
 static void

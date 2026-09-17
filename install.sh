@@ -1,31 +1,33 @@
 #!/usr/bin/env bash
 
-# Проверяем запуск с правами root
+# Check for root privileges
 if [[ $EUID -ne 0 ]]; then
-   echo "(!) Пожалуйста, запустите установку через: sudo make install"
+   echo "(!) Please run the installation via: sudo make install"
    exit 1
 fi
 
 EXTENSIONS_DIR="/usr/lib/nautilus/extensions-4"
+LOCALE_DIR="/usr/share/locale"
+GETTEXT_PACKAGE="nautilus-tweaks"
 REAL_USER="${SUDO_USER:-$USER}"
 
-# 1. Закрываем Nautilus от имени реального пользователя
+# 1. Quit Nautilus on behalf of the real user to unload old modules
 if [[ -n "$REAL_USER" && "$REAL_USER" != "root" ]]; then
     su - "$REAL_USER" -c "nautilus -q" 2>/dev/null || true
 fi
 
-# 2. Чистим старые файлы сборки и старые модули в системе
+# 2. Clean up old build artifacts and installed modules
 rm -f libnautilus-tweaks-*.so
 rm -f "$EXTENSIONS_DIR"/libnautilus-tweaks-*.so
 
 # --------------------------------------------------------------------------- #
-# СПИСОК МОДУЛЕЙ ПРОЕКТА                                                      #
-# Формат: "ID:исходный_файл.c:Описание для меню"                              #
+# PROJECT MODULES LIST                                                        #
+# Format: "ID:source_file.c:Menu description"                                 #
 # --------------------------------------------------------------------------- #
 MODULES=(
-    "actions:nautilus-tweaks-actions.c:Кастомные действия (Пути, VS Code, Root)"
-    "mount:nautilus-tweaks-mount.c:Монтирование серверов (SFTP, FTP, Rclone)"
-    "permissions:nautilus-tweaks-permissions.c:Управление правами (chmod / chown)"
+    "actions:nautilus-tweaks-actions.c:Custom actions (Copy Paths, VS Code, Root)"
+    "mount:nautilus-tweaks-mount.c:Server mounting (SFTP, FTP, Rclone)"
+    "permissions:nautilus-tweaks-permissions.c:Permission management (chmod / chown)"
 )
 
 SELECTED=()
@@ -42,10 +44,10 @@ tput civis
 draw_menu() {
     clear
     echo "========================================================"
-    echo "            Nautilus Tweaks — Установка                 "
+    echo "             Nautilus Tweaks — Installer                "
     echo "========================================================"
-    echo " [↑ / ↓] Навигация (или W/S, K/J)   [Пробел / Цифры 1-9] Вкл/Выкл"
-    echo " [Enter] Собрать и установить      [A] Выбрать все  [N] Снять все"
+    echo " [↑ / ↓] Navigate (or W/S, K/J)     [Space / 1-9] Toggle"
+    echo " [Enter] Build & Install           [A] Select all  [N] Deselect all"
     echo "--------------------------------------------------------"
     echo ""
 
@@ -59,7 +61,6 @@ draw_menu() {
             BOX="\e[90m[ ]\e[0m"
         fi
 
-        # Выравнивание: ровно 3 визуальных символа перед номером в обеих ветках
         if [[ $i -eq $CURRENT ]]; then
             echo -e " \e[1;36m>\e[0m $num. $BOX \e[1;37m$mod_desc\e[0m \e[90m($mod_src)\e[0m"
         else
@@ -70,7 +71,7 @@ draw_menu() {
     echo "--------------------------------------------------------"
 }
 
-# Обработка ввода
+# Input handling
 while true; do
     draw_menu
 
@@ -79,14 +80,14 @@ while true; do
     if [[ "$KEY" == $'\x1b' ]]; then
         read -rsn2 -t 0.05 KEY2 < /dev/tty || true
         case "$KEY2" in
-            "[A"|"OA") # Стрелка Вверх
+            "[A"|"OA") # Arrow Up
                 if [ $CURRENT -gt 0 ]; then
                     CURRENT=$((CURRENT - 1))
                 else
                     CURRENT=$((TOTAL - 1))
                 fi
                 ;;
-            "[B"|"OB") # Стрелка Вниз
+            "[B"|"OB") # Arrow Down
                 if [ $CURRENT -lt $((TOTAL - 1)) ]; then
                     CURRENT=$((CURRENT + 1))
                 else
@@ -124,7 +125,32 @@ while true; do
 done
 
 clear
-echo "==> Компиляция и установка модулей..."
+
+# --------------------------------------------------------------------------- #
+# 1. BUILD & INSTALL TRANSLATIONS                                             #
+# --------------------------------------------------------------------------- #
+if [ -d "po" ]; then
+    if command -v msgfmt >/dev/null 2>&1; then
+        echo "==> Compiling and installing translations..."
+        for po_file in po/*.po; do
+            [ -f "$po_file" ] || continue
+            lang=$(basename "$po_file" .po)
+            target_dir="$LOCALE_DIR/$lang/LC_MESSAGES"
+
+            install -d "$target_dir"
+            msgfmt "$po_file" -o "$target_dir/${GETTEXT_PACKAGE}.mo"
+            echo -e "  [+] Translation installed: \e[1m$lang\e[0m -> $target_dir/${GETTEXT_PACKAGE}.mo"
+        done
+        echo ""
+    else
+        echo -e "(!) \e[33mWarning: 'msgfmt' not found. Install gettext to enable translations.\e[0m\n"
+    fi
+fi
+
+# --------------------------------------------------------------------------- #
+# 2. COMPILE & INSTALL EXTENSION MODULES                                      #
+# --------------------------------------------------------------------------- #
+echo "==> Compiling and installing modules..."
 echo ""
 
 CFLAGS="-Wall -Wno-unused-parameter -O2 -fPIC $(pkg-config --cflags libnautilus-extension-4 gtk4 gio-2.0)"
@@ -138,18 +164,18 @@ for ((i=0; i<TOTAL; i++)); do
         IFS=":" read -r mod_id mod_src mod_desc <<< "${MODULES[i]}"
         OUT_LIB="libnautilus-tweaks-${mod_id}.so"
 
-        echo -e "  [+] Компиляция \e[1m$mod_src\e[0m -> $OUT_LIB"
+        echo -e "  [+] Compiling \e[1m$mod_src\e[0m -> $OUT_LIB"
         gcc $CFLAGS "$mod_src" tweaks-config.c -o "$OUT_LIB" $LDFLAGS
 
         install -m 755 "$OUT_LIB" "$EXTENSIONS_DIR"/
-        echo -e "      \e[32mУстановлен в $EXTENSIONS_DIR/$OUT_LIB\e[0m"
+        echo -e "      \e[32mInstalled to $EXTENSIONS_DIR/$OUT_LIB\e[0m"
         INSTALLED_COUNT=$((INSTALLED_COUNT + 1))
     fi
 done
 
 echo ""
 if [ $INSTALLED_COUNT -eq 0 ]; then
-    echo "(!) Все модули были отключены. Системная папка очищена."
+    echo "(!) All modules were disabled. System directory cleaned."
 else
-    echo -e "==> \e[32mГотово! Успешно установлено модулей: $INSTALLED_COUNT\e[0m"
+    echo -e "==> \e[32mDone! Successfully installed $INSTALLED_COUNT module(s).\e[0m"
 fi

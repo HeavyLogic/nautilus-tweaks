@@ -2,6 +2,22 @@
 #include <gio/gio.h>
 #include <string.h>
 
+#define LOCALEDIR "/usr/share/locale"
+
+void
+tweaks_i18n_init (void)
+{
+    static gsize initialized = 0;
+
+    /* Thread-safe one-time initialization */
+    if (g_once_init_enter (&initialized))
+    {
+        bindtextdomain (GETTEXT_PACKAGE, LOCALEDIR);
+        bind_textdomain_codeset (GETTEXT_PACKAGE, "UTF-8");
+        g_once_init_leave (&initialized, 1);
+    }
+}
+
 static void
 ensure_default_config_exists (const gchar *config_path)
 {
@@ -13,21 +29,21 @@ ensure_default_config_exists (const gchar *config_path)
 
     const gchar *default_content =
         "[General]\n"
-        "# Эмулятор терминала (kgx, gnome-terminal, ptyxis, ghostty, alacritty, foot, kitty, terminator)\n"
+        "# Terminal emulator (kgx, gnome-terminal, ptyxis, ghostty, alacritty, foot, kitty, terminator)\n"
         "terminal = kgx\n\n"
-        "# Консольный текстовый редактор для root (micro, nano, nvim, vim)\n"
+        "# Console text editor for root (micro, nano, nvim, vim)\n"
         "editor = micro\n\n"
-        "# Сокращать $HOME до ~ при копировании путей (true / false)\n"
+        "# Shorten $HOME to ~ when copying paths (true / false)\n"
         "shorten_home = true\n\n"
-        "# Раскрывать симлинки до реального пути целевого файла (true / false)\n"
+        "# Resolve symlinks to the real target file path (true / false)\n"
         "resolve_symlinks = true\n\n"
-        "# Список директорий для монтирования через запятую (оставьте пустым для отключения ограничения)\n"
+        "# Comma-separated list of allowed mount directories (leave empty to disable restriction)\n"
         "remote_dirs = /mnt/Remote\n\n"
-        "# Эмблема для смонтированных папок (globe, web, shared, synchronizing, default, favorite, system)\n"
+        "# Emblem for mounted directories (globe, web, shared, synchronizing, default, favorite, system)\n"
         "emblem = globe\n\n"
-        "# Дополнительные пользователи для меню прав через запятую (например: customuser, 1005)\n"
+        "# Additional users for permissions menu, comma-separated (e.g., customuser, 1005)\n"
         "extra_users = \n\n"
-        "# Дополнительные группы для меню прав через запятую (например: mygroup, 950)\n"
+        "# Additional groups for permissions menu, comma-separated (e.g., mygroup, 950)\n"
         "extra_groups = \n";
 
     g_file_set_contents (config_path, default_content, -1, NULL);
@@ -36,6 +52,9 @@ ensure_default_config_exists (const gchar *config_path)
 TweaksConfig *
 tweaks_config_load (void)
 {
+    /* Ensure translations are bound before anything else */
+    tweaks_i18n_init ();
+
     TweaksConfig *config = g_new0 (TweaksConfig, 1);
     config->terminal         = g_strdup ("kgx");
     config->editor           = g_strdup ("micro");
