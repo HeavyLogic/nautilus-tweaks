@@ -80,6 +80,5 @@ sudo make uninstall
 
 ### Для работы (Runtime):
 - **Для модуля монтирования (`mount`):**
-  - `zenity` — графический диалог выбора сервера
   - `sshfs` — для подключения SFTP/SSH
   - `rclone` — для подключения FTP, WebDAV, S3 и др.
