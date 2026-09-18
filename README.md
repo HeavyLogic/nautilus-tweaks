@@ -13,7 +13,7 @@ A Nautilus extension that adds various useful context menu actions.
 1. **Copy Path.** Automatically replaces `$HOME` with `~/` (configurable), resolves symlinks, and translates paths on mounted servers to their real remote paths (taking `# RemotePath:` into account).
 2. **Open folder as root.** Uses the modern GNOME `admin://` GVfs backend (hidden on remote mounts).
 3. **Edit file as root.** Supports both TUI editors via a customizable command template (`root_editor_cmd`, e.g. `ghostty -e sudo micro %f`) and GUI editors via `admin://`. Automatically hidden on remote mounts.
-4. **Mount SSH (SFTP).** Requires `sshfs` and `fuse3`. Reads host configurations directly from `~/.ssh/config`. Mounts the remote server root `/` (or the path defined in `# RemotePath: /var/www`) with built-in directory caching.
+4. **Mount SSH (SFTP).** Requires `sshfs` and `fuse3`. Reads host configurations directly from `~/.ssh/config`. Mounts the remote server root `/` (or the path defined in `# RemotePath: /var/www`).
 5. **Mount FTP.** Requires `rclone` and `fuse3`. Reads FTP server configurations from `~/.config/rclone/rclone.conf`.
 6. **Open in IDE.** Open any folder as a project in your preferred IDE (`code`, `zed`, `subl`, etc., configurable).
 7. **Manage Permissions (chmod / chown).** Works seamlessly on both local files and remote SSH servers. Full real-time sync between checkboxes, octal (`0755`), and symbolic (`rwxr-xr-x`) notation. Supports recursive applying and a separate `+X` for directories.

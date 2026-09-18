@@ -563,21 +563,15 @@ tweaks_remote_get_available_servers (void)
 const gchar *
 tweaks_remote_get_sshfs_options (gboolean password_stdin)
 {
-    const gchar *base_opts =
-        "reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,"
-        "follow_symlinks,StrictHostKeyChecking=accept-new,"
-        "auto_cache,cache_timeout=300,cache_stat=yes,cache_dir=yes,cache_link=yes,"
-        "Ciphers=chacha20-poly1305@openssh.com,aes128-gcm@openssh.com,"
-        "Compression=no";
-
     if (password_stdin)
     {
-        static gchar opts_pwd[512];
-        g_snprintf (opts_pwd, sizeof (opts_pwd), "%s,password_stdin", base_opts);
-        return opts_pwd;
+        return "reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,"
+               "follow_symlinks,StrictHostKeyChecking=accept-new,"
+               "password_stdin";
     }
 
-    return base_opts;
+    return "reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,"
+           "follow_symlinks,StrictHostKeyChecking=accept-new";
 }
 
 GSubprocess *
