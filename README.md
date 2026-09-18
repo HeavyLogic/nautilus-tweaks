@@ -1,11 +1,8 @@
 # Nautilus Tweaks
 
-A Nautilus extension that adds various useful context menu actions.  
-Have you missed this menu from WinSCP?  
+A Nautilus extension that adds various useful context menu actions.
 
-<a href="https://i.imgur.com/NezQy9O.png" target="_blank"><img width="300" src="https://i.imgur.com/NezQy9O.png" alt=""></a>
-
-## Why build this
+## Why
 
 - Python-based extensions for Nautilus context menus are sluggish.
 - Standard Nautilus scripts don't allow conditionally showing or hiding menu items.
