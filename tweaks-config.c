@@ -29,6 +29,8 @@ ensure_default_config_exists (const gchar *config_path)
 
     const gchar *default_content =
         "[General]\n"
+        "# Terminal emulator (kgx, ptyxis, ghostty, alacritty, kitty, foot; supports wrappers)\n"
+        "terminal = kgx\n\n"
         "# IDE / code editor for opening projects (code, zed, pycharm, subl)\n"
         "ide = code\n\n"
         "# Shorten $HOME to ~ when copying paths (true / false)\n"
@@ -63,6 +65,7 @@ tweaks_config_load (void)
 
     TweaksConfig *config = g_new0 (TweaksConfig, 1);
     config->ide              = g_strdup ("code");
+    config->terminal         = g_strdup ("kgx");
     config->shorten_home     = TRUE;
     config->resolve_symlinks = TRUE;
     config->resolve_remotes  = TRUE;
@@ -89,6 +92,17 @@ tweaks_config_load (void)
         {
             g_free (config->ide);
             config->ide = val;
+        }
+        else
+        {
+            g_free (val);
+        }
+
+        val = g_key_file_get_string (keyfile, "General", "terminal", NULL);
+        if (val && strlen (g_strstrip (val)) > 0)
+        {
+            g_free (config->terminal);
+            config->terminal = val;
         }
         else
         {
@@ -195,6 +209,7 @@ tweaks_config_free (TweaksConfig *config)
     if (!config)
         return;
     g_free (config->ide);
+    g_free (config->terminal);
     g_free (config->root_editor_mode);
     g_free (config->root_editor_cmd);
     g_free (config->root_editor_gui);

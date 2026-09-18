@@ -191,3 +191,12 @@ msgstr "Открыть сервер..."
 
 msgid "Connect and open remote server via GVfs"
 msgstr "Подключить и открыть удалённый сервер через GVfs"
+
+msgid "Open in Terminal"
+msgstr "Открыть в терминале"
+
+msgid "Open this directory in your preferred terminal"
+msgstr "Открыть эту папку в выбранном терминале"
+
+msgid "Open current directory in your preferred terminal"
+msgstr "Открыть текущую папку в выбранном терминале"

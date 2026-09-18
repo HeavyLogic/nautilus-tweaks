@@ -197,6 +197,103 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
 }
 
 /* -------------------------------------------------------------------------- */
+/* Action: Open folder in Terminal (Local CWD or Remote SSH)                  */
+/* -------------------------------------------------------------------------- */
+
+static void
+launch_terminal_ssh (const gchar *term, const gchar *host, const gchar *remote_cmd)
+{
+    gint term_argc = 0;
+    gchar **term_argv = NULL;
+
+    if (!g_shell_parse_argv (term, &term_argc, &term_argv, NULL) || term_argc == 0)
+    {
+        const gchar *fallback[] = { "kgx", "-e", "ssh", "-t", host, remote_cmd, NULL };
+        g_spawn_async (NULL, (gchar **) fallback, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+        return;
+    }
+
+    g_autofree gchar *last_token = g_path_get_basename (term_argv[term_argc - 1]);
+    gboolean is_terminator = (g_strcmp0 (last_token, "terminator") == 0);
+    gboolean is_dash_dash = (g_strcmp0 (last_token, "gnome-terminal") == 0 || g_strcmp0 (last_token, "ptyxis") == 0);
+
+    GPtrArray *args = g_ptr_array_new ();
+    for (int i = 0; i < term_argc; i++)
+        g_ptr_array_add (args, term_argv[i]);
+
+    if (is_terminator)
+    {
+        g_ptr_array_add (args, "-u");
+        g_ptr_array_add (args, "-x");
+    }
+    else if (is_dash_dash)
+    {
+        g_ptr_array_add (args, "--");
+    }
+    else
+    {
+        g_ptr_array_add (args, "-e");
+    }
+
+    g_ptr_array_add (args, "ssh");
+    g_ptr_array_add (args, "-t");
+    g_ptr_array_add (args, (gchar *) host);
+    g_ptr_array_add (args, (gchar *) remote_cmd);
+    g_ptr_array_add (args, NULL);
+
+    g_spawn_async (NULL, (gchar **) args->pdata, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+
+    g_ptr_array_free (args, TRUE);
+    g_strfreev (term_argv);
+}
+
+static void
+on_open_in_terminal_activated (NautilusMenuItem *item, gpointer user_data)
+{
+    GFile *location = G_FILE (user_data);
+    if (!location)
+        return;
+
+    TweaksConfig *config = tweaks_config_load ();
+    TweaksMountInfo *info = tweaks_mount_info_get_for_location (location);
+    const gchar *term = (config->terminal && strlen (config->terminal) > 0) ? config->terminal : "kgx";
+
+    if (info->mode == TWEAKS_FS_SSHFS && info->ssh_host)
+    {
+        /* Remote SSH server: open terminal with interactive SSH session in remote folder */
+        g_autofree gchar *remote_path = tweaks_remote_resolve_location_path (location);
+        const gchar *target_dir = (remote_path && strlen (remote_path) > 0) ? remote_path : "/";
+        g_autofree gchar *quoted_dir = g_shell_quote (target_dir);
+        g_autofree gchar *remote_cmd = g_strdup_printf ("cd %s; exec ${SHELL:-bash}", quoted_dir);
+
+        launch_terminal_ssh (term, info->ssh_host, remote_cmd);
+    }
+    else if (info->mode == TWEAKS_FS_LOCAL)
+    {
+        /* Local folder: open terminal with CWD */
+        g_autofree gchar *path = g_file_get_path (location);
+        if (path)
+        {
+            gint term_argc = 0;
+            gchar **term_argv = NULL;
+            if (g_shell_parse_argv (term, &term_argc, &term_argv, NULL) && term_argc > 0)
+            {
+                g_spawn_async (path, term_argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+                g_strfreev (term_argv);
+            }
+            else
+            {
+                const gchar *argv[] = { term, NULL };
+                g_spawn_async (path, (gchar **) argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+            }
+        }
+    }
+
+    tweaks_mount_info_free (info);
+    tweaks_config_free (config);
+}
+
+/* -------------------------------------------------------------------------- */
 /* 2. Action: Open folder in IDE                                              */
 /* -------------------------------------------------------------------------- */
 
@@ -313,7 +410,29 @@ nautilus_tweaks_actions_get_file_items (NautilusMenuProvider *provider, GList *f
         g_autoptr (GFile) location = nautilus_file_info_get_location (first_file);
         g_autofree gchar *target_path = location ? g_file_get_path (location) : NULL;
 
-        /* --- Item 2: Open in IDE (directories only) --- */
+        TweaksMountInfo *mount_info = location ? tweaks_mount_info_get_for_location (location) : NULL;
+        gboolean is_ftp = (mount_info && mount_info->mode == TWEAKS_FS_RCLONE);
+
+        /* --- Item 2: Open in Terminal (directories only, hidden on FTP) --- */
+        if (is_dir && location && !is_ftp)
+        {
+            g_autofree gchar *term_id = g_strdup_printf ("NautilusTweaks::OpenInTerm_%u", ++g_action_counter);
+            NautilusMenuItem *term_item = nautilus_menu_item_new (
+                term_id,
+                _("Open in Terminal"),
+                _("Open this directory in your preferred terminal"),
+                "utilities-terminal-symbolic"
+            );
+
+            g_signal_connect_data (term_item, "activate",
+                                   G_CALLBACK (on_open_in_terminal_activated),
+                                   g_object_ref (location),
+                                   (GClosureNotify) g_object_unref, 0);
+
+            items = g_list_append (items, term_item);
+        }
+
+        /* --- Item 3: Open in IDE (directories only) --- */
         if (is_dir && target_path)
         {
             g_autofree gchar *code_id = g_strdup_printf ("NautilusTweaks::OpenInIde_%u", ++g_action_counter);
@@ -332,8 +451,8 @@ nautilus_tweaks_actions_get_file_items (NautilusMenuProvider *provider, GList *f
             items = g_list_append (items, code_item);
         }
 
-        /* --- Item 3: Open / Edit as root (Local paths ONLY) --- */
-        if (!tweaks_remote_is_file_remote (location))
+        /* --- Item 4: Open / Edit as root (Local paths ONLY) --- */
+        if (location && !tweaks_remote_is_file_remote (location))
         {
             g_autofree gchar *root_label = is_dir ? g_strdup (_("Open as Root"))
                                                  : g_strdup (_("Edit as Root"));
@@ -357,6 +476,9 @@ nautilus_tweaks_actions_get_file_items (NautilusMenuProvider *provider, GList *f
 
             items = g_list_append (items, root_item);
         }
+
+        if (mount_info)
+            tweaks_mount_info_free (mount_info);
     }
 
     return items;
@@ -378,8 +500,9 @@ nautilus_tweaks_actions_get_background_items (NautilusMenuProvider *provider,
         return NULL;
 
     g_autofree gchar *target_path = g_file_get_path (location);
-    if (!target_path)
-        return NULL;
+
+    TweaksMountInfo *mount_info = tweaks_mount_info_get_for_location (location);
+    gboolean is_ftp = (mount_info && mount_info->mode == TWEAKS_FS_RCLONE);
 
     GList *items = NULL;
 
@@ -400,22 +523,43 @@ nautilus_tweaks_actions_get_background_items (NautilusMenuProvider *provider,
     g_list_free (single_list);
     items = g_list_append (items, copy_item);
 
-    /* 2. Open current folder in IDE */
-    g_autofree gchar *bg_code_id = g_strdup_printf ("NautilusTweaks::BgOpenInIde_%u", ++g_action_counter);
-    NautilusMenuItem *code_item = nautilus_menu_item_new (
-        bg_code_id,
-        _("Open in IDE"),
-        _("Open current directory as a project in IDE"),
-        "applications-development-symbolic"
-    );
+    /* 2. Open current folder in Terminal (hidden on FTP) */
+    if (!is_ftp)
+    {
+        g_autofree gchar *bg_term_id = g_strdup_printf ("NautilusTweaks::BgOpenInTerm_%u", ++g_action_counter);
+        NautilusMenuItem *term_item = nautilus_menu_item_new (
+            bg_term_id,
+            _("Open in Terminal"),
+            _("Open current directory in your preferred terminal"),
+            "utilities-terminal-symbolic"
+        );
 
-    g_signal_connect_data (code_item, "activate",
-                           G_CALLBACK (on_open_in_ide_activated),
-                           g_strdup (target_path),
-                           (GClosureNotify) g_free, 0);
-    items = g_list_append (items, code_item);
+        g_signal_connect_data (term_item, "activate",
+                               G_CALLBACK (on_open_in_terminal_activated),
+                               g_object_ref (location),
+                               (GClosureNotify) g_object_unref, 0);
+        items = g_list_append (items, term_item);
+    }
 
-    /* 3. Open current folder as root (Local folders ONLY) */
+    /* 3. Open current folder in IDE */
+    if (target_path)
+    {
+        g_autofree gchar *bg_code_id = g_strdup_printf ("NautilusTweaks::BgOpenInIde_%u", ++g_action_counter);
+        NautilusMenuItem *code_item = nautilus_menu_item_new (
+            bg_code_id,
+            _("Open in IDE"),
+            _("Open current directory as a project in IDE"),
+            "applications-development-symbolic"
+        );
+
+        g_signal_connect_data (code_item, "activate",
+                               G_CALLBACK (on_open_in_ide_activated),
+                               g_strdup (target_path),
+                               (GClosureNotify) g_free, 0);
+        items = g_list_append (items, code_item);
+    }
+
+    /* 4. Open current folder as root (Local folders ONLY) */
     if (!tweaks_remote_is_file_remote (location))
     {
         g_autofree gchar *bg_root_id = g_strdup_printf ("NautilusTweaks::BgOpenAsRoot_%u", ++g_action_counter);
@@ -432,6 +576,9 @@ nautilus_tweaks_actions_get_background_items (NautilusMenuProvider *provider,
                                (GClosureNotify) g_object_unref, 0);
         items = g_list_append (items, root_item);
     }
+
+    if (mount_info)
+        tweaks_mount_info_free (mount_info);
 
     return items;
 }

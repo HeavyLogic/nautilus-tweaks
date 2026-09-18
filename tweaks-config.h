@@ -13,6 +13,7 @@
 typedef struct {
     /* Action settings */
     gchar    *ide;
+    gchar    *terminal;
     gboolean  shorten_home;
     gboolean  resolve_symlinks;
     gboolean  resolve_remotes;

@@ -10,13 +10,15 @@ A Nautilus extension that adds various useful context menu actions.
 
 ## Features
 
-1. **Copy Path.** Automatically replaces `$HOME` with `~/` (configurable), resolves symlinks, and translates paths on mounted servers to their real remote paths (taking `# RemotePath:` into account).
+1. **Copy Path.** Automatically replaces `$HOME` with `~/` (configurable), resolves symlinks, and translates paths on mounted servers to their real remote paths (taking `# RemotePath:` in `~/.ssh/config` and `remote_path` in `rclone.conf` into account).
 2. **Open folder as root.** Uses the modern GNOME `admin://` GVfs backend (hidden on remote mounts).
 3. **Edit file as root.** Supports both TUI editors via a customizable command template (`root_editor_cmd`, e.g. `ghostty -e sudo micro %f`) and GUI editors via `admin://`. Automatically hidden on remote mounts.
-4. **Mount SSH (SFTP).** Requires `sshfs` and `fuse3`. Reads host configurations directly from `~/.ssh/config`. Mounts the remote server root `/` (or the path defined in `# RemotePath: /var/www`).
-5. **Mount FTP.** Requires `rclone` and `fuse3`. Reads FTP server configurations from `~/.config/rclone/rclone.conf`.
-6. **Open in IDE.** Open any folder as a project in your preferred IDE (`code`, `zed`, `subl`, etc., configurable).
-7. **Manage Permissions (chmod / chown).** Works seamlessly on both local files and remote SSH servers. Full real-time sync between checkboxes, octal (`0755`), and symbolic (`rwxr-xr-x`) notation. Supports recursive applying and a separate `+X` for directories.
+4. **Mount / Open Servers (SFTP & FTP).** Supports two interchangeable backends:
+   - **GVfs mode (default):** Opens servers directly as native tabs in Nautilus (`sftp://` and `ftp://`) from the folder background menu. No local mount folders required, and servers are easily disconnected using native sidebar eject buttons.
+   - **SSHFS / Rclone mode:** Mounts servers directly into local directories (defaults to `/mnt/Remote`).
+   - Reads SFTP hosts from `~/.ssh/config` and FTP hosts from `~/.config/rclone/rclone.conf` (supports starting directory via `# RemotePath:` / `remote_path`).
+5. **Open in IDE.** Open any folder as a project in your preferred IDE (`code`, `zed`, `subl`, etc., configurable).
+6. **Manage Permissions (chmod / chown).** Works seamlessly on local files and remote SSH/SFTP servers. Full real-time sync between checkboxes, octal (`0755`), and symbolic (`rwxr-xr-x`) notation. Supports recursive applying and a separate `+X` for directories.
 
 ## Roadmap
 
@@ -38,9 +40,11 @@ Available parameters:
 - `root_editor_mode` — Mode for editing files as root: `tui` (terminal editor) or `admin` (GUI editor via `admin://`, defaults to `tui`).
 - `root_editor_cmd` — Command template for editing files as root in TUI mode (`%f` will be replaced by the quoted file path; defaults to `kgx -e sudo micro %f`).
 - `root_editor_gui` — GUI editor for `admin://` mode (defaults to `gnome-text-editor`).
-- `remote_dirs` — Comma-separated list of allowed base directories inside which mounting is permitted (defaults to `/mnt/Remote`).
-- `emblem` — System emblem name for mounted folders (defaults to `globe`).
+- `sftp_backend` — Connection backend: `gvfs` (native GNOME network location, defaults to `gvfs`) or `sshfs` (mounts into a local folder).
+- `remote_dirs` — Comma-separated list of allowed base directories inside which mounting is permitted in `sshfs` mode (defaults to `/mnt/Remote`).
+- `emblem` — System emblem name for mounted folders in `sshfs` mode (defaults to `globe`).
 - `debug` — Enable debug logging to `~/.config/nautilus-tweaks/debug.log` (`true` / `false`, defaults to `false`).
+
 ### Example FTP configuration in `~/.config/rclone/rclone.conf`:
 ```ini
 [old-shop]
@@ -48,10 +52,10 @@ type = ftp
 host = 194.58.112.15
 user = shop_admin
 pass = zK19U8Gg-mUqZ89Q-ObscuredPass...
-# our custom option: initial remote directory
+# Custom extension option: starting directory (defaults to /)
 remote_path = /home/c/cl11917
 ```
-*(To obscure the password for the `pass` field, use `rclone obscure "your_password"` or run the interactive wizard `rclone config`)*.
+*(In `gvfs` mode, passwords saved in GNOME Keyring are used automatically. In `sshfs` mode, `rclone` uses the `pass` field).*
 
 ### Example SSH configuration in `~/.ssh/config`:
 ```ssh
@@ -89,7 +93,9 @@ sudo make uninstall
   - **Fedora:** `sudo dnf install gcc make pkgconf nautilus-devel gettext`
 
 ### Runtime dependencies:
-- **For the mounting module (`mount`):**
-  - `sshfs` — for mounting SFTP/SSH remotes
-  - `rclone` — for mounting FTP, WebDAV, S3, etc.
-  - `fuse3` — for userspace filesystem mounting
+- **For GVfs mode (default):**
+  - Standard GNOME virtual filesystem tools (`gvfs`, `gvfs-sftp`, `gvfs-ftp`).
+- **For local folder mounting mode (`sshfs`):**
+  - `sshfs` — for mounting SFTP/SSH remotes into folders.
+  - `rclone` — for mounting FTP remotes into folders.
+  - `fuse3` — for userspace filesystem mounting.
