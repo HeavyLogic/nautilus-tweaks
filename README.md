@@ -20,6 +20,7 @@ A Nautilus extension that adds various useful context menu actions.
 
 ## Roadmap
 
+[ ] Check my Nautilus fork, maybe I can add something from there  
 [ ] Remove mount icons on Nautilus start  
 [ ] Open in terminal of choice  
 [ ] Disableable actions
