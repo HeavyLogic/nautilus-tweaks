@@ -15,14 +15,12 @@ REAL_USER="${SUDO_USER:-$USER}"
 if [[ -n "$REAL_USER" && "$REAL_USER" != "root" ]]; then
     REAL_UID=$(id -u "$REAL_USER" 2>/dev/null)
     if [[ -n "$REAL_UID" && -d "/run/user/$REAL_UID" ]]; then
-        # Graceful quit via user's D-Bus session
         runuser -u "$REAL_USER" -- env \
             XDG_RUNTIME_DIR="/run/user/$REAL_UID" \
             DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$REAL_UID/bus" \
             nautilus -q 2>/dev/null || true
     fi
 
-    # Fallback to force-terminate if still lingering
     if command -v killall >/dev/null 2>&1; then
         killall -u "$REAL_USER" -q nautilus 2>/dev/null || true
     else
@@ -36,11 +34,10 @@ rm -f "$EXTENSIONS_DIR"/libnautilus-tweaks-*.so
 
 # --------------------------------------------------------------------------- #
 # PROJECT MODULES LIST                                                        #
-# Format: "ID:source_file.c:Menu description"                                 #
 # --------------------------------------------------------------------------- #
 MODULES=(
-    "actions:nautilus-tweaks-actions.c:Custom actions (Copy Paths, VS Code, Root)"
-    "mount:nautilus-tweaks-mount.c:Server mounting (SFTP, FTP, Rclone)"
+    "actions:nautilus-tweaks-actions.c:Custom actions (Copy Paths, IDE, Root)"
+    "mount:nautilus-tweaks-mount.c:Server mounting (SFTP, FTP, GVfs)"
     "permissions:nautilus-tweaks-permissions.c:Permission management (chmod / chown)"
 )
 
@@ -94,33 +91,17 @@ while true; do
     if [[ "$KEY" == $'\x1b' ]]; then
         read -rsn2 -t 0.05 KEY2 < /dev/tty || true
         case "$KEY2" in
-            "[A"|"OA") # Arrow Up
-                if [ $CURRENT -gt 0 ]; then
-                    CURRENT=$((CURRENT - 1))
-                else
-                    CURRENT=$((TOTAL - 1))
-                fi
+            "[A"|"OA")
+                if [ $CURRENT -gt 0 ]; then CURRENT=$((CURRENT - 1)); else CURRENT=$((TOTAL - 1)); fi
                 ;;
-            "[B"|"OB") # Arrow Down
-                if [ $CURRENT -lt $((TOTAL - 1)) ]; then
-                    CURRENT=$((CURRENT + 1))
-                else
-                    CURRENT=0
-                fi
+            "[B"|"OB")
+                if [ $CURRENT -lt $((TOTAL - 1)) ]; then CURRENT=$((CURRENT + 1)); else CURRENT=0; fi
                 ;;
         esac
     elif [[ "$KEY" == "w" || "$KEY" == "W" || "$KEY" == "k" || "$KEY" == "K" || "$KEY" == "ц" || "$KEY" == "Ц" || "$KEY" == "л" || "$KEY" == "Л" ]]; then
-        if [ $CURRENT -gt 0 ]; then
-            CURRENT=$((CURRENT - 1))
-        else
-            CURRENT=$((TOTAL - 1))
-        fi
+        if [ $CURRENT -gt 0 ]; then CURRENT=$((CURRENT - 1)); else CURRENT=$((TOTAL - 1)); fi
     elif [[ "$KEY" == "s" || "$KEY" == "S" || "$KEY" == "j" || "$KEY" == "J" || "$KEY" == "ы" || "$KEY" == "Ы" || "$KEY" == "о" || "$KEY" == "О" ]]; then
-        if [ $CURRENT -lt $((TOTAL - 1)) ]; then
-            CURRENT=$((CURRENT + 1))
-        else
-            CURRENT=0
-        fi
+        if [ $CURRENT -lt $((TOTAL - 1)) ]; then CURRENT=$((CURRENT + 1)); else CURRENT=0; fi
     elif [[ "$KEY" =~ ^[1-9]$ ]]; then
         idx=$((KEY - 1))
         if [ $idx -lt $TOTAL ]; then
@@ -178,8 +159,13 @@ for ((i=0; i<TOTAL; i++)); do
         IFS=":" read -r mod_id mod_src mod_desc <<< "${MODULES[i]}"
         OUT_LIB="libnautilus-tweaks-${mod_id}.so"
 
-        echo -e "  [+] Compiling \e[1m$mod_src\e[0m -> $OUT_LIB"
-        gcc $CFLAGS "$mod_src" tweaks-config.c tweaks-log.c tweaks-remote.c -o "$OUT_LIB" $LDFLAGS
+        EXTRA_SRC=""
+        if [[ "$mod_id" == "mount" ]]; then
+            EXTRA_SRC="nautilus-tweaks-mount-gvfs.c"
+        fi
+
+        echo -e "  [+] Compiling \e[1m$mod_src $EXTRA_SRC\e[0m -> $OUT_LIB"
+        gcc $CFLAGS "$mod_src" $EXTRA_SRC tweaks-config.c tweaks-log.c tweaks-remote.c -o "$OUT_LIB" $LDFLAGS
 
         install -m 755 "$OUT_LIB" "$EXTENSIONS_DIR"/
         echo -e "      \e[32mInstalled to $EXTENSIONS_DIR/$OUT_LIB\e[0m"

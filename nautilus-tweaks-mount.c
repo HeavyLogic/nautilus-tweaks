@@ -8,30 +8,15 @@
 #include "tweaks-config.h"
 #include "tweaks-log.h"
 #include "tweaks-remote.h"
+#include "nautilus-tweaks-mount-gvfs.h"
 
-/* Counter for generating unique menu item IDs */
 static guint g_mount_action_counter = 0;
-
-/* Pointer to active selection dialog window (Single Instance) */
-static GtkWidget *g_active_mount_window = NULL;
-
-/* -------------------------------------------------------------------------- */
-/* Data structures                                                            */
-/* -------------------------------------------------------------------------- */
 
 typedef struct {
     gchar *target_path;
     gchar *server_name;
     gchar *cmd_line;
 } MountFinishData;
-
-typedef struct {
-    GtkWidget          *window;
-    GtkWidget          *btn_connect;
-    gchar              *target_path;
-    GList              *servers;
-    TweaksRemoteServer *selected_server;
-} MountDialogWidgets;
 
 typedef struct {
     TweaksRemoteServer *server;
@@ -69,7 +54,7 @@ static void nautilus_tweaks_mount_init (NautilusTweaksMount *self) {}
 static void nautilus_tweaks_mount_class_finalize (NautilusTweaksMountClass *klass) {}
 
 /* -------------------------------------------------------------------------- */
-/* Window helper functions                                                    */
+/* Window helpers                                                             */
 /* -------------------------------------------------------------------------- */
 
 static GtkWindow *
@@ -82,9 +67,7 @@ get_nautilus_active_window (void)
         for (GList *w = windows; w != NULL; w = w->next)
         {
             if (GTK_IS_WINDOW (w->data) && gtk_widget_is_visible (GTK_WIDGET (w->data)))
-            {
                 return GTK_WINDOW (w->data);
-            }
         }
     }
     return NULL;
@@ -102,7 +85,6 @@ reload_nautilus_views (void)
             if (GTK_IS_WINDOW (w->data))
             {
                 gtk_widget_activate_action (GTK_WIDGET (w->data), "slot.reload", NULL);
-
                 GtkWidget *focus = gtk_window_get_focus (GTK_WINDOW (w->data));
                 if (focus)
                     gtk_widget_activate_action (focus, "slot.reload", NULL);
@@ -112,7 +94,7 @@ reload_nautilus_views (void)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Path permission check                                                      */
+/* Path permissions                                                           */
 /* -------------------------------------------------------------------------- */
 
 static gboolean
@@ -151,7 +133,7 @@ is_path_allowed_for_mount (const gchar *path, TweaksConfig *config)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Mounting servers and handling results                                      */
+/* Mounting execution                                                         */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -228,14 +210,9 @@ start_mount_server_rclone (TweaksRemoteServer *target_server, const gchar *targe
 {
     g_autofree gchar *remote_spec = NULL;
     if (target_server->remote_path && strlen (target_server->remote_path) > 0)
-    {
         remote_spec = g_strdup_printf ("%s:%s", target_server->name, target_server->remote_path);
-    }
     else
-    {
-        /* Append '/' so rclone mounts from server root, not the user's home directory */
         remote_spec = g_strdup_printf ("%s:/", target_server->name);
-    }
 
     g_autoptr (GSubprocessLauncher) launcher = g_subprocess_launcher_new (
         G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE
@@ -320,7 +297,7 @@ start_mount_server_sshfs (TweaksRemoteServer *target_server, const gchar *target
 }
 
 /* -------------------------------------------------------------------------- */
-/* Native child SSH password dialog                                           */
+/* Password Dialog                                                            */
 /* -------------------------------------------------------------------------- */
 
 static void
@@ -436,41 +413,24 @@ on_ssh_check_finished (GObject *source_object, GAsyncResult *res, gpointer user_
 }
 
 /* -------------------------------------------------------------------------- */
-/* GTK4 server selection dialog                                               */
+/* Chooser Callback                                                           */
 /* -------------------------------------------------------------------------- */
 
 static void
-on_mount_row_selected (GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
+on_server_chosen_for_mount (TweaksRemoteServer *server, gpointer user_data)
 {
-    MountDialogWidgets *d = (MountDialogWidgets *) user_data;
-    if (row)
-    {
-        d->selected_server = (TweaksRemoteServer *) g_object_get_data (G_OBJECT (row), "server");
-        gtk_widget_set_sensitive (d->btn_connect, TRUE);
-    }
-    else
-    {
-        d->selected_server = NULL;
-        gtk_widget_set_sensitive (d->btn_connect, FALSE);
-    }
-}
+    gchar *target_path = (gchar *) user_data;
 
-static void
-on_mount_connect_clicked (GtkButton *btn, gpointer user_data)
-{
-    MountDialogWidgets *d = (MountDialogWidgets *) user_data;
-    if (!d->selected_server)
-        return;
-
-    if (d->selected_server->is_rclone)
+    if (server->is_rclone)
     {
-        start_mount_server_rclone (d->selected_server, d->target_path);
+        start_mount_server_rclone (server, target_path);
+        tweaks_remote_server_free (server);
     }
     else
     {
         SshCheckData *check_data = g_new0 (SshCheckData, 1);
-        check_data->server = tweaks_remote_server_copy (d->selected_server);
-        check_data->target_path = g_strdup (d->target_path);
+        check_data->server = server;
+        check_data->target_path = g_strdup (target_path);
 
         g_autoptr (GError) err = NULL;
         GSubprocess *check_proc = tweaks_remote_ssh_spawn (
@@ -497,151 +457,24 @@ on_mount_connect_clicked (GtkButton *btn, gpointer user_data)
         }
     }
 
-    gtk_window_destroy (GTK_WINDOW (d->window));
-}
-
-static void
-on_mount_row_activated (GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
-{
-    on_mount_connect_clicked (NULL, user_data);
-}
-
-static void
-on_mount_dialog_destroyed (gpointer data, GObject *where_the_object_was)
-{
-    MountDialogWidgets *d = (MountDialogWidgets *) data;
-    g_active_mount_window = NULL;
-
-    g_free (d->target_path);
-    g_list_free_full (d->servers, (GDestroyNotify) tweaks_remote_server_free);
-    g_free (d);
+    g_free (target_path);
 }
 
 static void
 on_mount_dialog_activated (NautilusMenuItem *item, gpointer user_data)
 {
     gchar *target_path = (gchar *) user_data;
-
-    if (g_active_mount_window != NULL)
-    {
-        gtk_window_present (GTK_WINDOW (g_active_mount_window));
-        return;
-    }
-
-    GList *servers = tweaks_remote_get_available_servers ();
-    if (!servers)
-    {
-        const gchar *notify_argv[] = {
-            "notify-send",
-            "-u", "normal",
-            "-i", "dialog-information",
-            _("Remote Servers"),
-            _("All configured servers are already connected or none were found in configurations"),
-            NULL
-        };
-        g_spawn_async (NULL, (gchar **) notify_argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
-        return;
-    }
-
-    MountDialogWidgets *d = g_new0 (MountDialogWidgets, 1);
-    d->target_path = g_strdup (target_path);
-    d->servers = servers;
-    d->selected_server = NULL;
-
-    d->window = gtk_window_new ();
-    gtk_window_set_title (GTK_WINDOW (d->window), _("Mount Server"));
-    gtk_window_set_default_size (GTK_WINDOW (d->window), 390, 420);
-    gtk_window_set_resizable (GTK_WINDOW (d->window), FALSE);
-
-    GtkWindow *parent = get_nautilus_active_window ();
-    if (parent)
-    {
-        gtk_window_set_transient_for (GTK_WINDOW (d->window), parent);
-        gtk_window_set_modal (GTK_WINDOW (d->window), TRUE);
-    }
-
-    g_active_mount_window = d->window;
-    g_object_weak_ref (G_OBJECT (d->window), on_mount_dialog_destroyed, d);
-
-    GtkWidget *main_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
-    gtk_widget_set_margin_start (main_box, 16);
-    gtk_widget_set_margin_end (main_box, 16);
-    gtk_widget_set_margin_top (main_box, 16);
-    gtk_widget_set_margin_bottom (main_box, 16);
-    gtk_window_set_child (GTK_WINDOW (d->window), main_box);
-
     g_autofree gchar *target_str = g_strdup_printf (_("Mount point: %s"), target_path);
-    GtkWidget *lbl_target = gtk_label_new (target_str);
-    gtk_widget_set_halign (lbl_target, GTK_ALIGN_START);
-    gtk_label_set_ellipsize (GTK_LABEL (lbl_target), PANGO_ELLIPSIZE_START);
-    gtk_widget_add_css_class (lbl_target, "dim-label");
-    gtk_box_append (GTK_BOX (main_box), lbl_target);
+    GtkWindow *parent = get_nautilus_active_window ();
 
-    GtkWidget *lbl_title = gtk_label_new (_("Select server to connect:"));
-    gtk_widget_set_halign (lbl_title, GTK_ALIGN_START);
-    gtk_box_append (GTK_BOX (main_box), lbl_title);
-
-    GtkWidget *scrolled = gtk_scrolled_window_new ();
-    gtk_widget_set_vexpand (scrolled, TRUE);
-
-    GtkWidget *list_box = gtk_list_box_new ();
-    gtk_list_box_set_selection_mode (GTK_LIST_BOX (list_box), GTK_SELECTION_SINGLE);
-    gtk_list_box_set_activate_on_single_click (GTK_LIST_BOX (list_box), FALSE);
-
-    for (GList *l = servers; l != NULL; l = l->next)
-    {
-        TweaksRemoteServer *s = (TweaksRemoteServer *) l->data;
-        GtkWidget *row = gtk_list_box_row_new ();
-        g_object_set_data (G_OBJECT (row), "server", s);
-
-        GtkWidget *row_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
-        gtk_widget_set_margin_start (row_box, 12);
-        gtk_widget_set_margin_end (row_box, 12);
-        gtk_widget_set_margin_top (row_box, 8);
-        gtk_widget_set_margin_bottom (row_box, 8);
-
-        GtkWidget *icon = gtk_image_new_from_icon_name (s->is_rclone ? "folder-remote-symbolic" : "network-server-symbolic");
-        GtkWidget *name_lbl = gtk_label_new (s->name);
-        gtk_widget_set_hexpand (name_lbl, TRUE);
-        gtk_widget_set_halign (name_lbl, GTK_ALIGN_START);
-
-        GtkWidget *type_lbl = gtk_label_new (s->type_label);
-        gtk_widget_add_css_class (type_lbl, "dim-label");
-
-        gtk_box_append (GTK_BOX (row_box), icon);
-        gtk_box_append (GTK_BOX (row_box), name_lbl);
-        gtk_box_append (GTK_BOX (row_box), type_lbl);
-
-        gtk_list_box_row_set_child (GTK_LIST_BOX_ROW (row), row_box);
-        gtk_list_box_append (GTK_LIST_BOX (list_box), row);
-    }
-
-    gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scrolled), list_box);
-    gtk_box_append (GTK_BOX (main_box), scrolled);
-
-    GtkWidget *btn_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_widget_set_halign (btn_box, GTK_ALIGN_END);
-
-    GtkWidget *btn_cancel = gtk_button_new_with_label (_("Cancel"));
-    d->btn_connect = gtk_button_new_with_label (_("Connect"));
-    gtk_widget_add_css_class (d->btn_connect, "suggested-action");
-    gtk_widget_set_sensitive (d->btn_connect, FALSE);
-
-    g_signal_connect_swapped (btn_cancel, "clicked", G_CALLBACK (gtk_window_destroy), d->window);
-    g_signal_connect (d->btn_connect, "clicked", G_CALLBACK (on_mount_connect_clicked), d);
-
-    gtk_box_append (GTK_BOX (btn_box), btn_cancel);
-    gtk_box_append (GTK_BOX (btn_box), d->btn_connect);
-    gtk_box_append (GTK_BOX (main_box), btn_box);
-
-    gtk_list_box_unselect_all (GTK_LIST_BOX (list_box));
-
-    g_signal_connect (list_box, "row-selected", G_CALLBACK (on_mount_row_selected), d);
-    g_signal_connect (list_box, "row-activated", G_CALLBACK (on_mount_row_activated), d);
-
-    gtk_window_set_focus (GTK_WINDOW (d->window), btn_cancel);
-
-    gtk_window_present (GTK_WINDOW (d->window));
+    tweaks_remote_show_server_chooser (
+        parent,
+        _("Mount Server"),
+        target_str,
+        FALSE, /* show both SFTP and FTP */
+        on_server_chosen_for_mount,
+        g_strdup (target_path)
+    );
 }
 
 static void
@@ -695,23 +528,43 @@ on_unmount_ssh_activated (NautilusMenuItem *item, gpointer user_data)
 static GList *
 nautilus_tweaks_mount_get_file_items (NautilusMenuProvider *provider, GList *files)
 {
-    if (g_list_length (files) != 1)
+    TweaksConfig *config = tweaks_config_load ();
+
+    /* Early exit if gvfs backend is active */
+    if (g_ascii_strcasecmp (config->sftp_backend, "gvfs") == 0)
+    {
+        tweaks_config_free (config);
         return NULL;
+    }
+
+    if (g_list_length (files) != 1)
+    {
+        tweaks_config_free (config);
+        return NULL;
+    }
 
     NautilusFileInfo *first_file = NAUTILUS_FILE_INFO (files->data);
     if (!nautilus_file_info_is_directory (first_file))
+    {
+        tweaks_config_free (config);
         return NULL;
+    }
 
     g_autoptr (GFile) location = nautilus_file_info_get_location (first_file);
     if (!location)
+    {
+        tweaks_config_free (config);
         return NULL;
+    }
 
     g_autofree gchar *target_path = g_file_get_path (location);
     if (!target_path)
+    {
+        tweaks_config_free (config);
         return NULL;
+    }
 
     GList *items = NULL;
-    TweaksConfig *config = tweaks_config_load ();
 
     if (tweaks_mount_is_path_mounted (target_path))
     {
@@ -763,6 +616,7 @@ void
 nautilus_module_initialize (GTypeModule *module)
 {
     nautilus_tweaks_mount_register_type (module);
+    nautilus_tweaks_mount_gvfs_load (module);
 }
 
 void
@@ -773,8 +627,9 @@ nautilus_module_shutdown (void)
 void
 nautilus_module_list_types (const GType **types, int *num_types)
 {
-    static GType type_list[1];
+    static GType type_list[2];
     type_list[0] = nautilus_tweaks_mount_get_type ();
+    type_list[1] = nautilus_tweaks_mount_gvfs_type ();
     *types = type_list;
-    *num_types = 1;
+    *num_types = 2;
 }

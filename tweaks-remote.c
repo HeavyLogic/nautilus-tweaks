@@ -1,8 +1,11 @@
 #include "tweaks-remote.h"
+#include "tweaks-config.h"
 #include "tweaks-log.h"
 
 #include <stdio.h>
 #include <string.h>
+
+static GtkWidget *g_active_chooser_window = NULL;
 
 /* -------------------------------------------------------------------------- */
 /* Mount Information and Path Helpers                                         */
@@ -148,7 +151,6 @@ tweaks_mount_translate_to_remote (const TweaksMountInfo *info, const gchar *loca
             result = g_build_filename (base, subpath, NULL);
     }
 
-    /* Ensure the path starts with '/' */
     if (result && result[0] != '/')
     {
         gchar *tmp = g_strdup_printf ("/%s", result);
@@ -248,7 +250,6 @@ tweaks_remote_resolve_path (const gchar *local_path)
         return NULL;
     }
 
-    /* SSHFS: check # RemotePath: from ~/.ssh/config */
     if (info->mode == TWEAKS_FS_SSHFS && info->ssh_host)
     {
         if (!info->remote_base_path || g_strcmp0 (info->remote_base_path, "/") == 0)
@@ -261,7 +262,6 @@ tweaks_remote_resolve_path (const gchar *local_path)
             }
         }
     }
-    /* RCLONE: check remote_path from rclone.conf */
     else if (info->mode == TWEAKS_FS_RCLONE && info->ssh_host)
     {
         if (!info->remote_base_path || g_strcmp0 (info->remote_base_path, "/") == 0)
@@ -429,6 +429,8 @@ tweaks_remote_server_free (TweaksRemoteServer *server)
         return;
     g_free (server->name);
     g_free (server->type_label);
+    g_free (server->host);
+    g_free (server->user);
     g_free (server->remote_path);
     g_free (server);
 }
@@ -442,6 +444,9 @@ tweaks_remote_server_copy (const TweaksRemoteServer *server)
     TweaksRemoteServer *copy = g_new0 (TweaksRemoteServer, 1);
     copy->name        = g_strdup (server->name);
     copy->type_label  = g_strdup (server->type_label);
+    copy->host        = g_strdup (server->host);
+    copy->user        = g_strdup (server->user);
+    copy->port        = server->port;
     copy->remote_path = g_strdup (server->remote_path);
     copy->is_rclone   = server->is_rclone;
     return copy;
@@ -517,7 +522,6 @@ tweaks_remote_get_available_servers (void)
             gchar *group_name = groups[i];
             gchar *type = g_key_file_get_string (keyfile, group_name, "type", NULL);
 
-            /* Strict check: allow ONLY ftp from rclone; SFTP is handled via sshfs */
             if (!type || g_ascii_strcasecmp (type, "ftp") != 0)
             {
                 g_free (type);
@@ -530,16 +534,17 @@ tweaks_remote_get_available_servers (void)
             cur->type_label = g_strdup ("FTP");
             cur->is_rclone  = TRUE;
 
-            /* Read custom remote_path if configured */
+            cur->host = g_key_file_get_string (keyfile, group_name, "host", NULL);
+            cur->user = g_key_file_get_string (keyfile, group_name, "user", NULL);
+
+            gint port_val = g_key_file_get_integer (keyfile, group_name, "port", NULL);
+            cur->port = (port_val > 0) ? (guint) port_val : 0;
+
             gchar *rpath = g_key_file_get_string (keyfile, group_name, "remote_path", NULL);
             if (rpath && strlen (g_strstrip (rpath)) > 0)
-            {
                 cur->remote_path = rpath;
-            }
             else
-            {
                 g_free (rpath);
-            }
 
             if (!tweaks_mount_is_server_mounted (cur))
             {
@@ -554,6 +559,212 @@ tweaks_remote_get_available_servers (void)
     }
 
     return list;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Universal Server Selection Dialog                                          */
+/* -------------------------------------------------------------------------- */
+
+typedef struct {
+    GtkWidget                    *window;
+    GtkWidget                    *btn_connect;
+    GList                        *servers;
+    TweaksRemoteServer           *selected_server;
+    TweaksServerSelectedCallback  callback;
+    gpointer                      user_data;
+} ServerChooserWidgets;
+
+static void
+on_chooser_row_selected (GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
+{
+    ServerChooserWidgets *d = (ServerChooserWidgets *) user_data;
+    if (row)
+    {
+        d->selected_server = (TweaksRemoteServer *) g_object_get_data (G_OBJECT (row), "server");
+        gtk_widget_set_sensitive (d->btn_connect, TRUE);
+    }
+    else
+    {
+        d->selected_server = NULL;
+        gtk_widget_set_sensitive (d->btn_connect, FALSE);
+    }
+}
+
+static void
+on_chooser_connect_clicked (GtkButton *btn, gpointer user_data)
+{
+    ServerChooserWidgets *d = (ServerChooserWidgets *) user_data;
+    if (!d->selected_server || !d->callback)
+        return;
+
+    TweaksRemoteServer *copy = tweaks_remote_server_copy (d->selected_server);
+    TweaksServerSelectedCallback cb = d->callback;
+    gpointer ud = d->user_data;
+
+    gtk_window_destroy (GTK_WINDOW (d->window));
+    cb (copy, ud);
+}
+
+static void
+on_chooser_row_activated (GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
+{
+    on_chooser_connect_clicked (NULL, user_data);
+}
+
+static void
+on_chooser_dialog_destroyed (gpointer data, GObject *where_the_object_was)
+{
+    ServerChooserWidgets *d = (ServerChooserWidgets *) data;
+    g_active_chooser_window = NULL;
+
+    g_list_free_full (d->servers, (GDestroyNotify) tweaks_remote_server_free);
+    g_free (d);
+}
+
+void
+tweaks_remote_show_server_chooser (GtkWindow                   *parent,
+                                   const gchar                 *title,
+                                   const gchar                 *target_label_text,
+                                   gboolean                     only_sftp,
+                                   TweaksServerSelectedCallback callback,
+                                   gpointer                    user_data)
+{
+    if (g_active_chooser_window != NULL)
+    {
+        gtk_window_present (GTK_WINDOW (g_active_chooser_window));
+        return;
+    }
+
+    GList *all_servers = tweaks_remote_get_available_servers ();
+    GList *filtered = NULL;
+
+    for (GList *l = all_servers; l != NULL; l = l->next)
+    {
+        TweaksRemoteServer *s = (TweaksRemoteServer *) l->data;
+        if (only_sftp && s->is_rclone)
+        {
+            tweaks_remote_server_free (s);
+        }
+        else
+        {
+            filtered = g_list_append (filtered, s);
+        }
+    }
+    g_list_free (all_servers);
+
+    if (!filtered)
+    {
+        const gchar *notify_argv[] = {
+            "notify-send",
+            "-u", "normal",
+            "-i", "dialog-information",
+            _("Remote Servers"),
+            _("All configured servers are already connected or none were found in configurations"),
+            NULL
+        };
+        g_spawn_async (NULL, (gchar **) notify_argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+        return;
+    }
+
+    ServerChooserWidgets *d = g_new0 (ServerChooserWidgets, 1);
+    d->servers = filtered;
+    d->callback = callback;
+    d->user_data = user_data;
+
+    d->window = gtk_window_new ();
+    gtk_window_set_title (GTK_WINDOW (d->window), title ? title : _("Connect to Server"));
+    gtk_window_set_default_size (GTK_WINDOW (d->window), 390, 420);
+    gtk_window_set_resizable (GTK_WINDOW (d->window), FALSE);
+
+    if (parent)
+    {
+        gtk_window_set_transient_for (GTK_WINDOW (d->window), parent);
+        gtk_window_set_modal (GTK_WINDOW (d->window), TRUE);
+    }
+
+    g_active_chooser_window = d->window;
+    g_object_weak_ref (G_OBJECT (d->window), on_chooser_dialog_destroyed, d);
+
+    GtkWidget *main_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
+    gtk_widget_set_margin_start (main_box, 16);
+    gtk_widget_set_margin_end (main_box, 16);
+    gtk_widget_set_margin_top (main_box, 16);
+    gtk_widget_set_margin_bottom (main_box, 16);
+    gtk_window_set_child (GTK_WINDOW (d->window), main_box);
+
+    if (target_label_text && strlen (target_label_text) > 0)
+    {
+        GtkWidget *lbl_target = gtk_label_new (target_label_text);
+        gtk_widget_set_halign (lbl_target, GTK_ALIGN_START);
+        gtk_label_set_ellipsize (GTK_LABEL (lbl_target), PANGO_ELLIPSIZE_START);
+        gtk_widget_add_css_class (lbl_target, "dim-label");
+        gtk_box_append (GTK_BOX (main_box), lbl_target);
+    }
+
+    GtkWidget *lbl_title = gtk_label_new (_("Select server to connect:"));
+    gtk_widget_set_halign (lbl_title, GTK_ALIGN_START);
+    gtk_box_append (GTK_BOX (main_box), lbl_title);
+
+    GtkWidget *scrolled = gtk_scrolled_window_new ();
+    gtk_widget_set_vexpand (scrolled, TRUE);
+
+    GtkWidget *list_box = gtk_list_box_new ();
+    gtk_list_box_set_selection_mode (GTK_LIST_BOX (list_box), GTK_SELECTION_SINGLE);
+    gtk_list_box_set_activate_on_single_click (GTK_LIST_BOX (list_box), FALSE);
+
+    for (GList *l = filtered; l != NULL; l = l->next)
+    {
+        TweaksRemoteServer *s = (TweaksRemoteServer *) l->data;
+        GtkWidget *row = gtk_list_box_row_new ();
+        g_object_set_data (G_OBJECT (row), "server", s);
+
+        GtkWidget *row_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+        gtk_widget_set_margin_start (row_box, 12);
+        gtk_widget_set_margin_end (row_box, 12);
+        gtk_widget_set_margin_top (row_box, 8);
+        gtk_widget_set_margin_bottom (row_box, 8);
+
+        GtkWidget *icon = gtk_image_new_from_icon_name (s->is_rclone ? "folder-remote-symbolic" : "network-server-symbolic");
+        GtkWidget *name_lbl = gtk_label_new (s->name);
+        gtk_widget_set_hexpand (name_lbl, TRUE);
+        gtk_widget_set_halign (name_lbl, GTK_ALIGN_START);
+
+        GtkWidget *type_lbl = gtk_label_new (s->type_label);
+        gtk_widget_add_css_class (type_lbl, "dim-label");
+
+        gtk_box_append (GTK_BOX (row_box), icon);
+        gtk_box_append (GTK_BOX (row_box), name_lbl);
+        gtk_box_append (GTK_BOX (row_box), type_lbl);
+
+        gtk_list_box_row_set_child (GTK_LIST_BOX_ROW (row), row_box);
+        gtk_list_box_append (GTK_LIST_BOX (list_box), row);
+    }
+
+    gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scrolled), list_box);
+    gtk_box_append (GTK_BOX (main_box), scrolled);
+
+    GtkWidget *btn_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_halign (btn_box, GTK_ALIGN_END);
+
+    GtkWidget *btn_cancel = gtk_button_new_with_label (_("Cancel"));
+    d->btn_connect = gtk_button_new_with_label (_("Connect"));
+    gtk_widget_add_css_class (d->btn_connect, "suggested-action");
+    gtk_widget_set_sensitive (d->btn_connect, FALSE);
+
+    g_signal_connect_swapped (btn_cancel, "clicked", G_CALLBACK (gtk_window_destroy), d->window);
+    g_signal_connect (d->btn_connect, "clicked", G_CALLBACK (on_chooser_connect_clicked), d);
+
+    gtk_box_append (GTK_BOX (btn_box), btn_cancel);
+    gtk_box_append (GTK_BOX (btn_box), d->btn_connect);
+    gtk_box_append (GTK_BOX (main_box), btn_box);
+
+    gtk_list_box_unselect_all (GTK_LIST_BOX (list_box));
+
+    g_signal_connect (list_box, "row-selected", G_CALLBACK (on_chooser_row_selected), d);
+    g_signal_connect (list_box, "row-activated", G_CALLBACK (on_chooser_row_activated), d);
+
+    gtk_window_set_focus (GTK_WINDOW (d->window), btn_cancel);
+    gtk_window_present (GTK_WINDOW (d->window));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -632,4 +843,48 @@ tweaks_remote_ssh_exec_sync (const gchar  *host,
         *exit_code = g_subprocess_get_exit_status (proc);
 
     return g_subprocess_get_successful (proc);
+}
+
+gchar *
+tweaks_remote_server_build_gvfs_uri (const TweaksRemoteServer *server)
+{
+    if (!server)
+        return NULL;
+
+    const gchar *subpath = server->remote_path ? server->remote_path : "";
+    while (*subpath == '/')
+        subpath++;
+
+    if (!server->is_rclone)
+    {
+        /* SFTP: GVfs understands OpenSSH Host aliases natively */
+        if (strlen (subpath) > 0)
+            return g_strdup_printf ("sftp://%s/%s", server->name, subpath);
+        else
+            return g_strdup_printf ("sftp://%s/", server->name);
+    }
+    else
+    {
+        /* FTP: construct ftp://[user@]host[:port]/path */
+        const gchar *host = (server->host && strlen (server->host) > 0) ? server->host : server->name;
+        GString *uri = g_string_new ("ftp://");
+
+        if (server->user && strlen (server->user) > 0)
+        {
+            g_autofree gchar *esc_user = g_uri_escape_string (server->user, NULL, TRUE);
+            g_string_append_printf (uri, "%s@", esc_user);
+        }
+
+        g_string_append (uri, host);
+
+        if (server->port > 0 && server->port != 21)
+            g_string_append_printf (uri, ":%u", server->port);
+
+        if (strlen (subpath) > 0)
+            g_string_append_printf (uri, "/%s", subpath);
+        else
+            g_string_append_c (uri, '/');
+
+        return g_string_free (uri, FALSE);
+    }
 }

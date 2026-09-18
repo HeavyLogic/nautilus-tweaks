@@ -21,6 +21,7 @@ typedef struct {
     gchar    *root_editor_gui;    /* GUI editor for admin://, e.g. "gnome-text-editor" */
 
     /* Mount settings */
+    gchar    *sftp_backend;       /* "gvfs" (native network) or "sshfs" (local folder mount) */
     gchar   **remote_dirs;
     gchar    *emblem;
 

@@ -44,9 +44,11 @@ ensure_default_config_exists (const gchar *config_path)
         "root_editor_cmd = kgx -e sudo micro %f\n\n"
         "# GUI text editor for editing files as root in \"admin\" mode (must support admin://, e.g. gnome-text-editor)\n"
         "root_editor_gui = gnome-text-editor\n\n"
-        "# Comma-separated list of allowed mount directories (leave empty to disable restriction)\n"
+        "# SFTP connection backend: \"gvfs\" (native GNOME network location) or \"sshfs\" (mounts into folder)\n"
+        "sftp_backend = gvfs\n\n"
+        "# Comma-separated list of allowed mount directories for sshfs (leave empty to disable restriction)\n"
         "remote_dirs = /mnt/Remote\n\n"
-        "# Emblem for mounted directories (globe, web, shared, synchronizing, default, favorite, system)\n"
+        "# Emblem for mounted directories in sshfs mode (globe, web, shared, default, favorite, system)\n"
         "emblem = globe\n\n"
         "# Enable debug logging to ~/.config/nautilus-tweaks/debug.log (true / false)\n"
         "debug = false\n";
@@ -67,6 +69,7 @@ tweaks_config_load (void)
     config->root_editor_mode = g_strdup ("tui");
     config->root_editor_cmd  = g_strdup ("kgx -e sudo micro %f");
     config->root_editor_gui  = g_strdup ("gnome-text-editor");
+    config->sftp_backend     = g_strdup ("gvfs");
     config->emblem           = g_strdup ("globe");
     config->remote_dirs      = g_strsplit ("/mnt/Remote", ",", -1);
     config->debug            = FALSE;
@@ -141,6 +144,17 @@ tweaks_config_load (void)
             g_free (val);
         }
 
+        val = g_key_file_get_string (keyfile, "General", "sftp_backend", NULL);
+        if (val && strlen (g_strstrip (val)) > 0)
+        {
+            g_free (config->sftp_backend);
+            config->sftp_backend = val;
+        }
+        else
+        {
+            g_free (val);
+        }
+
         gchar *rd = g_key_file_get_string (keyfile, "General", "remote_dirs", NULL);
         if (rd && strlen (g_strstrip (rd)) > 0)
         {
@@ -184,6 +198,7 @@ tweaks_config_free (TweaksConfig *config)
     g_free (config->root_editor_mode);
     g_free (config->root_editor_cmd);
     g_free (config->root_editor_gui);
+    g_free (config->sftp_backend);
     g_free (config->emblem);
     g_strfreev (config->remote_dirs);
     g_free (config);

@@ -182,3 +182,12 @@ msgstr "Редактировать от root"
 
 msgid "Edit file with administrator privileges"
 msgstr "Редактировать файл с правами администратора"
+
+msgid "Open Server"
+msgstr "Открыть сервер"
+
+msgid "Open Server..."
+msgstr "Открыть сервер..."
+
+msgid "Connect and open remote server via GVfs"
+msgstr "Подключить и открыть удалённый сервер через GVfs"
