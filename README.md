@@ -5,6 +5,8 @@ Have you missed this menu from WinSCP?
 
 <a href="https://i.imgur.com/NezQy9O.png" target="_blank"><img width="300" src="https://i.imgur.com/NezQy9O.png" alt=""></a>
 
+![img](https://i.imgur.com/NezQy9O.png)
+
 ## Why build this
 
 - Python-based extensions for Nautilus context menus are sluggish.
