@@ -3,9 +3,9 @@
 A Nautilus extension that adds various useful context menu actions.  
 Have you missed this menu from WinSCP?  
 
-<a href="https://i.imgur.com/NezQy9O.png" target="_blank"><img width="300" src="https://i.imgur.com/NezQy9O.png" alt=""></a>
-
-![img](https://i.imgur.com/NezQy9O.png)
+<a href="screenshots/1.webp" target="_blank">
+  <img src="screenshots/1.webp" width="300" alt="screenshot">
+</a>
 
 ## Why build this
 
