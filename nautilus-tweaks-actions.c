@@ -329,28 +329,31 @@ nautilus_tweaks_actions_get_file_items (NautilusMenuProvider *provider, GList *f
             items = g_list_append (items, code_item);
         }
 
-        /* --- Item 3: Open / Edit as root --- */
-        g_autofree gchar *root_label = is_dir ? g_strdup (_("Open as Root"))
-                                             : g_strdup (_("Edit as Root"));
+        /* --- Item 3: Open / Edit as root (Local paths ONLY) --- */
+        if (target_path && !tweaks_mount_is_remote (target_path))
+        {
+            g_autofree gchar *root_label = is_dir ? g_strdup (_("Open as Root"))
+                                                 : g_strdup (_("Edit as Root"));
 
-        const gchar *root_tip   = is_dir ? _("Open this folder in Nautilus with administrator privileges")
-                                         : _("Edit file with administrator privileges");
-        const gchar *root_icon  = is_dir ? "folder-remote-symbolic" : "accessories-text-editor-symbolic";
+            const gchar *root_tip   = is_dir ? _("Open this folder in Nautilus with administrator privileges")
+                                             : _("Edit file with administrator privileges");
+            const gchar *root_icon  = is_dir ? "folder-remote-symbolic" : "accessories-text-editor-symbolic";
 
-        g_autofree gchar *root_id = g_strdup_printf ("NautilusTweaks::OpenAsRoot_%u", ++g_action_counter);
-        NautilusMenuItem *root_item = nautilus_menu_item_new (
-            root_id,
-            root_label,
-            root_tip,
-            root_icon
-        );
+            g_autofree gchar *root_id = g_strdup_printf ("NautilusTweaks::OpenAsRoot_%u", ++g_action_counter);
+            NautilusMenuItem *root_item = nautilus_menu_item_new (
+                root_id,
+                root_label,
+                root_tip,
+                root_icon
+            );
 
-        g_signal_connect_data (root_item, "activate",
-                               G_CALLBACK (on_open_as_root_activated),
-                               g_object_ref (first_file),
-                               (GClosureNotify) g_object_unref, 0);
+            g_signal_connect_data (root_item, "activate",
+                                   G_CALLBACK (on_open_as_root_activated),
+                                   g_object_ref (first_file),
+                                   (GClosureNotify) g_object_unref, 0);
 
-        items = g_list_append (items, root_item);
+            items = g_list_append (items, root_item);
+        }
     }
 
     return items;
@@ -409,20 +412,23 @@ nautilus_tweaks_actions_get_background_items (NautilusMenuProvider *provider,
                            (GClosureNotify) g_free, 0);
     items = g_list_append (items, code_item);
 
-    /* 3. Open current folder as root */
-    g_autofree gchar *bg_root_id = g_strdup_printf ("NautilusTweaks::BgOpenAsRoot_%u", ++g_action_counter);
-    NautilusMenuItem *root_item = nautilus_menu_item_new (
-        bg_root_id,
-        _("Open as Root"),
-        _("Open current folder in Nautilus with administrator privileges"),
-        "folder-remote-symbolic"
-    );
+    /* 3. Open current folder as root (Local folders ONLY) */
+    if (!tweaks_mount_is_remote (target_path))
+    {
+        g_autofree gchar *bg_root_id = g_strdup_printf ("NautilusTweaks::BgOpenAsRoot_%u", ++g_action_counter);
+        NautilusMenuItem *root_item = nautilus_menu_item_new (
+            bg_root_id,
+            _("Open as Root"),
+            _("Open current folder in Nautilus with administrator privileges"),
+            "folder-remote-symbolic"
+        );
 
-    g_signal_connect_data (root_item, "activate",
-                           G_CALLBACK (on_open_as_root_activated),
-                           g_object_ref (current_folder),
-                           (GClosureNotify) g_object_unref, 0);
-    items = g_list_append (items, root_item);
+        g_signal_connect_data (root_item, "activate",
+                               G_CALLBACK (on_open_as_root_activated),
+                               g_object_ref (current_folder),
+                               (GClosureNotify) g_object_unref, 0);
+        items = g_list_append (items, root_item);
+    }
 
     return items;
 }

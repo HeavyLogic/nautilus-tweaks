@@ -40,6 +40,7 @@ gboolean         tweaks_mount_is_path_mounted    (const gchar *path);
 gboolean         tweaks_mount_is_inside_mount    (const gchar *path);
 gboolean         tweaks_mount_has_submounts      (const gchar *path);
 gboolean         tweaks_mount_is_server_mounted  (const TweaksRemoteServer *server);
+gboolean         tweaks_mount_is_remote          (const gchar *path);
 
 /* Resolves local path to remote server path taking into account RemotePath from ~/.ssh/config.
  * Returns newly-allocated remote path string, or NULL if path is not on a mounted remote server. */

@@ -229,14 +229,12 @@ start_mount_server_rclone (TweaksRemoteServer *target_server, const gchar *targe
     g_autofree gchar *remote_spec = NULL;
     if (target_server->remote_path && strlen (target_server->remote_path) > 0)
     {
-        const gchar *subpath = target_server->remote_path;
-        if (subpath[0] == '/')
-            subpath++;
-        remote_spec = g_strdup_printf ("%s:%s", target_server->name, subpath);
+        remote_spec = g_strdup_printf ("%s:%s", target_server->name, target_server->remote_path);
     }
     else
     {
-        remote_spec = g_strdup_printf ("%s:", target_server->name);
+        /* Append '/' so rclone mounts from server root, not the user's home directory */
+        remote_spec = g_strdup_printf ("%s:/", target_server->name);
     }
 
     g_autoptr (GSubprocessLauncher) launcher = g_subprocess_launcher_new (

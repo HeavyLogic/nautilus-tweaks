@@ -107,6 +107,18 @@ tweaks_mount_info_get_for_path (const gchar *path)
     return info;
 }
 
+gboolean
+tweaks_mount_is_remote (const gchar *path)
+{
+    if (!path)
+        return FALSE;
+
+    TweaksMountInfo *info = tweaks_mount_info_get_for_path (path);
+    gboolean is_remote = (info && info->mode != TWEAKS_FS_LOCAL);
+    tweaks_mount_info_free (info);
+    return is_remote;
+}
+
 gchar *
 tweaks_mount_translate_to_remote (const TweaksMountInfo *info, const gchar *local_path)
 {
@@ -119,17 +131,32 @@ tweaks_mount_translate_to_remote (const TweaksMountInfo *info, const gchar *loca
         subpath++;
 
     const gchar *base = info->remote_base_path;
+    gchar *result = NULL;
+
     if (!base || g_strcmp0 (base, "/") == 0 || strlen (base) == 0)
     {
         if (strlen (subpath) == 0)
-            return g_strdup ("/");
-        return g_strdup_printf ("/%s", subpath);
+            result = g_strdup ("/");
+        else
+            result = g_strdup_printf ("/%s", subpath);
+    }
+    else
+    {
+        if (strlen (subpath) == 0)
+            result = g_strdup (base);
+        else
+            result = g_build_filename (base, subpath, NULL);
     }
 
-    if (strlen (subpath) == 0)
-        return g_strdup (base);
+    /* Ensure the path starts with '/' */
+    if (result && result[0] != '/')
+    {
+        gchar *tmp = g_strdup_printf ("/%s", result);
+        g_free (result);
+        result = tmp;
+    }
 
-    return g_build_filename (base, subpath, NULL);
+    return result;
 }
 
 gchar *
@@ -189,6 +216,25 @@ tweaks_remote_get_configured_remote_path (const gchar *target_host)
     return result;
 }
 
+static gchar *
+tweaks_remote_get_rclone_remote_path (const gchar *remote_name)
+{
+    if (!remote_name || strlen (remote_name) == 0)
+        return NULL;
+
+    const gchar *config_dir = g_get_user_config_dir ();
+    g_autofree gchar *rclone_cfg = g_build_filename (config_dir, "rclone", "rclone.conf", NULL);
+    g_autoptr (GKeyFile) keyfile = g_key_file_new ();
+    if (g_key_file_load_from_file (keyfile, rclone_cfg, G_KEY_FILE_NONE, NULL))
+    {
+        gchar *rpath = g_key_file_get_string (keyfile, remote_name, "remote_path", NULL);
+        if (rpath && strlen (g_strstrip (rpath)) > 0)
+            return rpath;
+        g_free (rpath);
+    }
+    return NULL;
+}
+
 gchar *
 tweaks_remote_resolve_path (const gchar *local_path)
 {
@@ -202,13 +248,25 @@ tweaks_remote_resolve_path (const gchar *local_path)
         return NULL;
     }
 
-    /* If remote_base_path is "/" or empty, check if user specified
-     * # RemotePath: in ~/.ssh/config */
+    /* SSHFS: check # RemotePath: from ~/.ssh/config */
     if (info->mode == TWEAKS_FS_SSHFS && info->ssh_host)
     {
         if (!info->remote_base_path || g_strcmp0 (info->remote_base_path, "/") == 0)
         {
             g_autofree gchar *cfg_remote = tweaks_remote_get_configured_remote_path (info->ssh_host);
+            if (cfg_remote && strlen (cfg_remote) > 0)
+            {
+                g_free (info->remote_base_path);
+                info->remote_base_path = g_steal_pointer (&cfg_remote);
+            }
+        }
+    }
+    /* RCLONE: check remote_path from rclone.conf */
+    else if (info->mode == TWEAKS_FS_RCLONE && info->ssh_host)
+    {
+        if (!info->remote_base_path || g_strcmp0 (info->remote_base_path, "/") == 0)
+        {
+            g_autofree gchar *cfg_remote = tweaks_remote_get_rclone_remote_path (info->ssh_host);
             if (cfg_remote && strlen (cfg_remote) > 0)
             {
                 g_free (info->remote_base_path);
@@ -471,6 +529,17 @@ tweaks_remote_get_available_servers (void)
             cur->name       = g_strdup (group_name);
             cur->type_label = g_strdup ("FTP");
             cur->is_rclone  = TRUE;
+
+            /* Read custom remote_path if configured */
+            gchar *rpath = g_key_file_get_string (keyfile, group_name, "remote_path", NULL);
+            if (rpath && strlen (g_strstrip (rpath)) > 0)
+            {
+                cur->remote_path = rpath;
+            }
+            else
+            {
+                g_free (rpath);
+            }
 
             if (!tweaks_mount_is_server_mounted (cur))
             {
