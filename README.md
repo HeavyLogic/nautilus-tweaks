@@ -18,6 +18,10 @@ A Nautilus extension that adds various useful context menu actions.
 6. **Open in IDE.** Open any folder as a project in your preferred IDE (`code`, `zed`, `subl`, etc., configurable).
 7. **Manage Permissions (chmod / chown).** Works seamlessly on both local files and remote SSH servers. Full real-time sync between checkboxes, octal (`0755`), and symbolic (`rwxr-xr-x`) notation. Supports recursive applying and a separate `+X` for directories.
 
+## Roadmap
+[ ] Remove mount icons on Nautilus start
+[ ] Open in terminal of choice
+[ ] Disableable actions
 
 ## Configuration
 
