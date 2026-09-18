@@ -670,28 +670,6 @@ populate_models_from_parsed_data (PermissionsDialogWidgets *w,
         g_strfreev (lines);
     }
 
-    /* Custom entries from config.ini */
-    TweaksConfig *config = tweaks_config_load ();
-    if (config && config->extra_users)
-    {
-        for (int i = 0; config->extra_users[i] != NULL; i++)
-        {
-            const gchar *extra = config->extra_users[i];
-            if (strlen (extra) > 0)
-                ADD_U (w->owners_model, seen_u, extra, "custom");
-        }
-    }
-    if (config && config->extra_groups)
-    {
-        for (int i = 0; config->extra_groups[i] != NULL; i++)
-        {
-            const gchar *extra = config->extra_groups[i];
-            if (strlen (extra) > 0)
-                ADD_G (w->groups_model, seen_g, extra, "custom");
-        }
-    }
-    tweaks_config_free (config);
-
     #undef ADD_U
     #undef ADD_G
     g_hash_table_destroy (seen_u);

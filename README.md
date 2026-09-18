@@ -30,13 +30,16 @@ The extension stores its configuration at:
 `~/.config/nautilus-tweaks/config.ini`
 
 Available parameters:
-- `terminal` — Terminal emulator (`kgx`, `gnome-terminal`, `ptyxis`, `ghostty`, `terminator`, etc.; supports wrappers).
-- `editor` — Console editor for root (`micro`, `nano`, `nvim`, `vim`).
-- `shorten_home` — Replace `$HOME` with `~` when copying (`true` / `false`).
-- `resolve_symlinks` — Resolve symlinks to their real target path (`true` / `false`).
+- `ide` — IDE / editor for opening projects (`code`, `zed`, `subl`, etc.; defaults to `code`).
+- `shorten_home` — Replace `$HOME` with `~` when copying paths (`true` / `false`, defaults to `true`).
+- `resolve_symlinks` — Resolve symlinks to their real target path (`true` / `false`, defaults to `true`).
+- `resolve_remotes` — Translate paths on mounted servers to real remote server paths (`true` / `false`, defaults to `true`).
+- `root_editor_mode` — Mode for editing files as root: `tui` (terminal editor) or `admin` (GUI editor via `admin://`, defaults to `tui`).
+- `root_editor_cmd` — Command template for editing files as root in TUI mode (`%f` will be replaced by the quoted file path; defaults to `kgx -e sudo micro %f`).
+- `root_editor_gui` — GUI editor for `admin://` mode (defaults to `gnome-text-editor`).
 - `remote_dirs` — Comma-separated list of allowed base directories inside which mounting is permitted (defaults to `/mnt/Remote`).
-- `emblem` — System icon name for mounted folders (defaults to `globe`).
-
+- `emblem` — System emblem name for mounted folders (defaults to `globe`).
+- `debug` — Enable debug logging to `~/.config/nautilus-tweaks/debug.log` (`true` / `false`, defaults to `false`).
 ### Example FTP configuration in `~/.config/rclone/rclone.conf`:
 ```ini
 [old-shop]

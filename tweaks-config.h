@@ -24,10 +24,6 @@ typedef struct {
     gchar   **remote_dirs;
     gchar    *emblem;
 
-    /* Permission settings */
-    gchar   **extra_users;
-    gchar   **extra_groups;
-
     /* Debug settings */
     gboolean  debug;
 } TweaksConfig;

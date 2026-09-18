@@ -48,10 +48,6 @@ ensure_default_config_exists (const gchar *config_path)
         "remote_dirs = /mnt/Remote\n\n"
         "# Emblem for mounted directories (globe, web, shared, synchronizing, default, favorite, system)\n"
         "emblem = globe\n\n"
-        "# Additional users for permissions menu, comma-separated (e.g., customuser, 1005)\n"
-        "extra_users = \n\n"
-        "# Additional groups for permissions menu, comma-separated (e.g., mygroup, 950)\n"
-        "extra_groups = \n\n"
         "# Enable debug logging to ~/.config/nautilus-tweaks/debug.log (true / false)\n"
         "debug = false\n";
 
@@ -73,8 +69,6 @@ tweaks_config_load (void)
     config->root_editor_gui  = g_strdup ("gnome-text-editor");
     config->emblem           = g_strdup ("globe");
     config->remote_dirs      = g_strsplit ("/mnt/Remote", ",", -1);
-    config->extra_users      = g_strsplit ("", ",", -1);
-    config->extra_groups     = g_strsplit ("", ",", -1);
     config->debug            = FALSE;
 
     const gchar *config_dir = g_get_user_config_dir ();
@@ -172,34 +166,6 @@ tweaks_config_load (void)
             g_free (emb);
         }
 
-        gchar *eu = g_key_file_get_string (keyfile, "General", "extra_users", NULL);
-        if (eu && strlen (g_strstrip (eu)) > 0)
-        {
-            g_strfreev (config->extra_users);
-            config->extra_users = g_strsplit (eu, ",", -1);
-            for (int i = 0; config->extra_users[i] != NULL; i++)
-                g_strstrip (config->extra_users[i]);
-            g_free (eu);
-        }
-        else
-        {
-            g_free (eu);
-        }
-
-        gchar *eg = g_key_file_get_string (keyfile, "General", "extra_groups", NULL);
-        if (eg && strlen (g_strstrip (eg)) > 0)
-        {
-            g_strfreev (config->extra_groups);
-            config->extra_groups = g_strsplit (eg, ",", -1);
-            for (int i = 0; config->extra_groups[i] != NULL; i++)
-                g_strstrip (config->extra_groups[i]);
-            g_free (eg);
-        }
-        else
-        {
-            g_free (eg);
-        }
-
         gboolean dbg = g_key_file_get_boolean (keyfile, "General", "debug", &err);
         if (!err)
             config->debug = dbg;
@@ -220,7 +186,5 @@ tweaks_config_free (TweaksConfig *config)
     g_free (config->root_editor_gui);
     g_free (config->emblem);
     g_strfreev (config->remote_dirs);
-    g_strfreev (config->extra_users);
-    g_strfreev (config->extra_groups);
     g_free (config);
 }
