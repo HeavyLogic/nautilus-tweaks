@@ -33,29 +33,14 @@ msgstr "Копирует путь в буфер обмена"
 msgid "Copy current folder path to clipboard"
 msgstr "Копирует путь текущей папки в буфер обмена"
 
-msgid "Open in VS Code"
-msgstr "Открыть папку в VS Code"
-
-msgid "Open this directory as a project in VS Code"
-msgstr "Открыть эту директорию как проект в VS Code"
-
-msgid "Open current directory as a project in VS Code"
-msgstr "Открыть текущую директорию как проект в VS Code"
-
 msgid "Open as Root"
 msgstr "Открыть как root"
-
-msgid "Edit as Root (%s)"
-msgstr "Редактировать как root (%s)"
 
 msgid "Open this folder in Nautilus with administrator privileges"
 msgstr "Открыть эту папку в Nautilus с правами администратора"
 
 msgid "Open current folder in Nautilus with administrator privileges"
 msgstr "Открыть текущую папку в Nautilus с правами администратора"
-
-msgid "Edit file in console editor as root"
-msgstr "Редактировать файл в консольном редакторе от имени root"
 
 msgid "Process exited with an error (non-zero exit code). See ~/.config/nautilus-tweaks/debug.log"
 msgstr "Процесс завершился с ошибкой (код != 0). См. ~/.config/nautilus-tweaks/debug.log"
@@ -182,3 +167,18 @@ msgstr "Изменить владельца, группу и права дост
 
 msgid "_Symbolic:"
 msgstr "_Символьный:"
+
+msgid "Open in IDE"
+msgstr "Открыть в IDE"
+
+msgid "Open this directory as a project in IDE"
+msgstr "Открыть эту папку как проект в IDE"
+
+msgid "Open current directory as a project in IDE"
+msgstr "Открыть текущую папку как проект в IDE"
+
+msgid "Edit as Root"
+msgstr "Редактировать от root"
+
+msgid "Edit file with administrator privileges"
+msgstr "Редактировать файл с правами администратора"

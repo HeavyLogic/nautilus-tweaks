@@ -37,67 +37,45 @@ static void nautilus_tweaks_actions_init (NautilusTweaksActions *self) {}
 static void nautilus_tweaks_actions_class_finalize (NautilusTweaksActionsClass *klass) {}
 
 /* -------------------------------------------------------------------------- */
-/* Helper: Launch commands in terminal                                        */
+/* Helper: Execute root editor (TUI template or GUI admin://)                 */
 /* -------------------------------------------------------------------------- */
 
 static void
-launch_in_terminal (const gchar *terminal, const gchar *command)
+execute_root_editor (TweaksConfig *config, const gchar *path)
 {
-    gint term_argc = 0;
-    gchar **term_argv = NULL;
-
-    if (!g_shell_parse_argv (terminal, &term_argc, &term_argv, NULL) || term_argc == 0)
+    if (g_ascii_strcasecmp (config->root_editor_mode, "admin") == 0)
     {
-        const gchar *fallback_argv[] = { "kgx", "--", "sh", "-c", command, NULL };
-        g_spawn_async (NULL, (gchar **) fallback_argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
-        return;
+        /* GUI editor with admin:// protocol */
+        g_autofree gchar *admin_uri = g_strdup_printf ("admin://%s", path);
+        const gchar *gui_app = (config->root_editor_gui && strlen (config->root_editor_gui) > 0)
+                               ? config->root_editor_gui
+                               : "gnome-text-editor";
+        const gchar *argv[] = { gui_app, admin_uri, NULL };
+        g_spawn_async (NULL, (gchar **) argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
     }
-
-    GPtrArray *argv_array = g_ptr_array_new ();
-    for (int i = 0; i < term_argc; i++)
-        g_ptr_array_add (argv_array, term_argv[i]);
-
-    const gchar *last_token = term_argv[term_argc - 1];
-
-    /* kgx / gnome-terminal / ptyxis */
-    if (g_strcmp0 (last_token, "kgx") == 0 ||
-        g_strcmp0 (last_token, "gnome-console") == 0 ||
-        g_strcmp0 (last_token, "gnome-terminal") == 0 ||
-        g_strcmp0 (last_token, "ptyxis") == 0)
-    {
-        g_ptr_array_add (argv_array, "--");
-        g_ptr_array_add (argv_array, "sh");
-        g_ptr_array_add (argv_array, "-c");
-        g_ptr_array_add (argv_array, (gchar *) command);
-    }
-    /* Terminator */
-    else if (g_strcmp0 (last_token, "terminator") == 0)
-    {
-        g_ptr_array_add (argv_array, "-e");
-        g_ptr_array_add (argv_array, (gchar *) command);
-    }
-    /* kitty and foot */
-    else if (g_strcmp0 (last_token, "kitty") == 0 || g_strcmp0 (last_token, "foot") == 0)
-    {
-        g_ptr_array_add (argv_array, "sh");
-        g_ptr_array_add (argv_array, "-c");
-        g_ptr_array_add (argv_array, (gchar *) command);
-    }
-    /* ghostty / alacritty */
     else
     {
-        g_ptr_array_add (argv_array, "-e");
-        g_ptr_array_add (argv_array, "sh");
-        g_ptr_array_add (argv_array, "-c");
-        g_ptr_array_add (argv_array, (gchar *) command);
+        /* TUI editor via command template */
+        const gchar *tmpl = (config->root_editor_cmd && strlen (config->root_editor_cmd) > 0)
+                            ? config->root_editor_cmd
+                            : "kgx -e sudo micro %f";
+
+        g_autofree gchar *quoted_path = g_shell_quote (path);
+        g_autofree gchar *final_cmd = NULL;
+
+        if (strstr (tmpl, "%f"))
+        {
+            gchar **tokens = g_strsplit (tmpl, "%f", -1);
+            final_cmd = g_strjoinv (quoted_path, tokens);
+            g_strfreev (tokens);
+        }
+        else
+        {
+            final_cmd = g_strdup_printf ("%s %s", tmpl, quoted_path);
+        }
+
+        g_spawn_command_line_async (final_cmd, NULL);
     }
-
-    g_ptr_array_add (argv_array, NULL);
-
-    g_spawn_async (NULL, (gchar **) argv_array->pdata, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
-
-    g_ptr_array_free (argv_array, TRUE);
-    g_strfreev (term_argv);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -172,11 +150,14 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
             g_string_append_c (text, '\n');
         first = FALSE;
 
-        /* Check if path is on a remote server */
-        g_autofree gchar *remote_path = tweaks_remote_resolve_path (candidate_path);
+        /* Resolve remote server path if enabled */
+        g_autofree gchar *remote_path = NULL;
+        if (config->resolve_remotes)
+            remote_path = tweaks_remote_resolve_path (candidate_path);
+
         if (remote_path)
         {
-            /* Copy actual remote path as-is */
+            /* Copy actual remote path as-is without local ~ shortening */
             g_string_append (text, remote_path);
         }
         else
@@ -213,15 +194,37 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
 }
 
 /* -------------------------------------------------------------------------- */
-/* 2. Action: Open folder in VS Code                                          */
+/* 2. Action: Open folder in IDE                                              */
 /* -------------------------------------------------------------------------- */
 
 static void
-on_open_in_code_activated (NautilusMenuItem *item, gpointer user_data)
+on_open_in_ide_activated (NautilusMenuItem *item, gpointer user_data)
 {
     gchar *path = (gchar *) user_data;
-    const gchar *argv[] = { "code", path, NULL };
-    g_spawn_async (NULL, (gchar **) argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+    TweaksConfig *config = tweaks_config_load ();
+    const gchar *ide = (config->ide && strlen (config->ide) > 0) ? config->ide : "code";
+
+    gint ide_argc = 0;
+    gchar **ide_argv = NULL;
+    if (g_shell_parse_argv (ide, &ide_argc, &ide_argv, NULL) && ide_argc > 0)
+    {
+        GPtrArray *argv_array = g_ptr_array_new ();
+        for (int i = 0; i < ide_argc; i++)
+            g_ptr_array_add (argv_array, ide_argv[i]);
+        g_ptr_array_add (argv_array, path);
+        g_ptr_array_add (argv_array, NULL);
+
+        g_spawn_async (NULL, (gchar **) argv_array->pdata, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+        g_ptr_array_free (argv_array, TRUE);
+        g_strfreev (ide_argv);
+    }
+    else
+    {
+        const gchar *argv[] = { ide, path, NULL };
+        g_spawn_async (NULL, (gchar **) argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL);
+    }
+
+    tweaks_config_free (config);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -251,8 +254,7 @@ on_open_as_root_activated (NautilusMenuItem *item, gpointer user_data)
     else
     {
         TweaksConfig *config = tweaks_config_load ();
-        g_autofree gchar *cmd = g_strdup_printf ("sudo %s \"%s\"", config->editor, path);
-        launch_in_terminal (config->terminal, cmd);
+        execute_root_editor (config, path);
         tweaks_config_free (config);
     }
 }
@@ -269,8 +271,6 @@ nautilus_tweaks_actions_get_file_items (NautilusMenuProvider *provider, GList *f
 
     if (len == 0)
         return NULL;
-
-    TweaksConfig *config = tweaks_config_load ();
 
     /* --- Item 1: Copy path --- */
     g_autofree gchar *copy_label = NULL;
@@ -310,19 +310,19 @@ nautilus_tweaks_actions_get_file_items (NautilusMenuProvider *provider, GList *f
         g_autoptr (GFile) location = nautilus_file_info_get_location (first_file);
         g_autofree gchar *target_path = location ? g_file_get_path (location) : NULL;
 
-        /* --- Item 2: Open folder in VS Code (directories only) --- */
+        /* --- Item 2: Open in IDE (directories only) --- */
         if (is_dir && target_path)
         {
-            g_autofree gchar *code_id = g_strdup_printf ("NautilusTweaks::OpenInCode_%u", ++g_action_counter);
+            g_autofree gchar *code_id = g_strdup_printf ("NautilusTweaks::OpenInIde_%u", ++g_action_counter);
             NautilusMenuItem *code_item = nautilus_menu_item_new (
                 code_id,
-                _("Open in VS Code"),
-                _("Open this directory as a project in VS Code"),
-                "com.visualstudio.code"
+                _("Open in IDE"),
+                _("Open this directory as a project in IDE"),
+                "applications-development-symbolic"
             );
 
             g_signal_connect_data (code_item, "activate",
-                                   G_CALLBACK (on_open_in_code_activated),
+                                   G_CALLBACK (on_open_in_ide_activated),
                                    g_strdup (target_path),
                                    (GClosureNotify) g_free, 0);
 
@@ -330,14 +330,11 @@ nautilus_tweaks_actions_get_file_items (NautilusMenuProvider *provider, GList *f
         }
 
         /* --- Item 3: Open / Edit as root --- */
-        g_autofree gchar *root_label = NULL;
-        if (is_dir)
-            root_label = g_strdup (_("Open as Root"));
-        else
-            root_label = g_strdup_printf (_("Edit as Root (%s)"), config->editor);
+        g_autofree gchar *root_label = is_dir ? g_strdup (_("Open as Root"))
+                                             : g_strdup (_("Edit as Root"));
 
         const gchar *root_tip   = is_dir ? _("Open this folder in Nautilus with administrator privileges")
-                                         : _("Edit file in console editor as root");
+                                         : _("Edit file with administrator privileges");
         const gchar *root_icon  = is_dir ? "folder-remote-symbolic" : "accessories-text-editor-symbolic";
 
         g_autofree gchar *root_id = g_strdup_printf ("NautilusTweaks::OpenAsRoot_%u", ++g_action_counter);
@@ -356,7 +353,6 @@ nautilus_tweaks_actions_get_file_items (NautilusMenuProvider *provider, GList *f
         items = g_list_append (items, root_item);
     }
 
-    tweaks_config_free (config);
     return items;
 }
 
@@ -398,17 +394,17 @@ nautilus_tweaks_actions_get_background_items (NautilusMenuProvider *provider,
     g_list_free (single_list);
     items = g_list_append (items, copy_item);
 
-    /* 2. Open current folder in VS Code */
-    g_autofree gchar *bg_code_id = g_strdup_printf ("NautilusTweaks::BgOpenInCode_%u", ++g_action_counter);
+    /* 2. Open current folder in IDE */
+    g_autofree gchar *bg_code_id = g_strdup_printf ("NautilusTweaks::BgOpenInIde_%u", ++g_action_counter);
     NautilusMenuItem *code_item = nautilus_menu_item_new (
         bg_code_id,
-        _("Open in VS Code"),
-        _("Open current directory as a project in VS Code"),
-        "com.visualstudio.code"
+        _("Open in IDE"),
+        _("Open current directory as a project in IDE"),
+        "applications-development-symbolic"
     );
 
     g_signal_connect_data (code_item, "activate",
-                           G_CALLBACK (on_open_in_code_activated),
+                           G_CALLBACK (on_open_in_ide_activated),
                            g_strdup (target_path),
                            (GClosureNotify) g_free, 0);
     items = g_list_append (items, code_item);

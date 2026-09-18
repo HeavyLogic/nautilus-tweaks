@@ -52,6 +52,25 @@ tweaks_mount_info_get_for_path (const gchar *path)
                     if (g_str_has_prefix (fstype, "fuse.rclone") || g_strcmp0 (fstype, "rclone") == 0)
                     {
                         info->mode = TWEAKS_FS_RCLONE;
+                        g_free (info->ssh_host);
+                        g_free (info->remote_base_path);
+
+                        char *colon = strchr (dev, ':');
+                        if (colon)
+                        {
+                            info->ssh_host = g_strndup (dev, colon - dev);
+                            info->remote_base_path = g_strdup (colon + 1);
+                            if (strlen (info->remote_base_path) == 0)
+                            {
+                                g_free (info->remote_base_path);
+                                info->remote_base_path = g_strdup ("/");
+                            }
+                        }
+                        else
+                        {
+                            info->ssh_host = g_strdup (dev);
+                            info->remote_base_path = g_strdup ("/");
+                        }
                     }
                     else if (g_str_has_prefix (fstype, "fuse.sshfs") || g_strcmp0 (fstype, "sshfs") == 0)
                     {
@@ -91,7 +110,7 @@ tweaks_mount_info_get_for_path (const gchar *path)
 gchar *
 tweaks_mount_translate_to_remote (const TweaksMountInfo *info, const gchar *local_path)
 {
-    if (!info || info->mode != TWEAKS_FS_SSHFS || !info->mount_point || !local_path)
+    if (!info || info->mode == TWEAKS_FS_LOCAL || !info->mount_point || !local_path)
         return g_strdup (local_path ? local_path : "");
 
     gsize mnt_len = strlen (info->mount_point);
@@ -99,10 +118,108 @@ tweaks_mount_translate_to_remote (const TweaksMountInfo *info, const gchar *loca
     while (*subpath == '/')
         subpath++;
 
-    if (g_strcmp0 (info->remote_base_path, "/") == 0 || strlen (info->remote_base_path) == 0)
+    const gchar *base = info->remote_base_path;
+    if (!base || g_strcmp0 (base, "/") == 0 || strlen (base) == 0)
+    {
+        if (strlen (subpath) == 0)
+            return g_strdup ("/");
         return g_strdup_printf ("/%s", subpath);
+    }
 
-    return g_build_filename (info->remote_base_path, subpath, NULL);
+    if (strlen (subpath) == 0)
+        return g_strdup (base);
+
+    return g_build_filename (base, subpath, NULL);
+}
+
+gchar *
+tweaks_remote_get_configured_remote_path (const gchar *target_host)
+{
+    if (!target_host || strlen (target_host) == 0)
+        return NULL;
+
+    const gchar *home = g_get_home_dir ();
+    g_autofree gchar *ssh_cfg = g_build_filename (home, ".ssh", "config", NULL);
+    FILE *fp = fopen (ssh_cfg, "r");
+    if (!fp)
+        return NULL;
+
+    char line[1024];
+    gchar *current_host = NULL;
+    gchar *pending_path = NULL;
+    gchar *result = NULL;
+
+    while (fgets (line, sizeof (line), fp))
+    {
+        gchar *trimmed = g_strstrip (line);
+
+        if (trimmed[0] == '#')
+        {
+            if (g_ascii_strncasecmp (trimmed, "# RemotePath:", 13) == 0)
+            {
+                const gchar *val = g_strstrip (trimmed + 13);
+                if (current_host && g_strcmp0 (current_host, target_host) == 0)
+                {
+                    result = g_strdup (val);
+                    break;
+                }
+                g_free (pending_path);
+                pending_path = g_strdup (val);
+            }
+            continue;
+        }
+
+        if (g_ascii_strncasecmp (trimmed, "Host ", 5) == 0)
+        {
+            g_free (current_host);
+            current_host = g_strdup (g_strstrip (trimmed + 5));
+
+            if (current_host && g_strcmp0 (current_host, target_host) == 0 && pending_path)
+            {
+                result = g_strdup (pending_path);
+                break;
+            }
+            g_clear_pointer (&pending_path, g_free);
+        }
+    }
+
+    g_free (current_host);
+    g_free (pending_path);
+    fclose (fp);
+    return result;
+}
+
+gchar *
+tweaks_remote_resolve_path (const gchar *local_path)
+{
+    if (!local_path)
+        return NULL;
+
+    TweaksMountInfo *info = tweaks_mount_info_get_for_path (local_path);
+    if (!info || info->mode == TWEAKS_FS_LOCAL || !info->mount_point)
+    {
+        tweaks_mount_info_free (info);
+        return NULL;
+    }
+
+    /* If remote_base_path is "/" or empty, check if user specified
+     * # RemotePath: in ~/.ssh/config */
+    if (info->mode == TWEAKS_FS_SSHFS && info->ssh_host)
+    {
+        if (!info->remote_base_path || g_strcmp0 (info->remote_base_path, "/") == 0)
+        {
+            g_autofree gchar *cfg_remote = tweaks_remote_get_configured_remote_path (info->ssh_host);
+            if (cfg_remote && strlen (cfg_remote) > 0)
+            {
+                g_free (info->remote_base_path);
+                info->remote_base_path = g_steal_pointer (&cfg_remote);
+            }
+        }
+    }
+
+    gchar *remote = tweaks_mount_translate_to_remote (info, local_path);
+    tweaks_mount_info_free (info);
+    return remote;
 }
 
 gboolean
@@ -369,6 +486,7 @@ tweaks_remote_get_available_servers (void)
 
     return list;
 }
+
 /* -------------------------------------------------------------------------- */
 /* SSH Command Execution & Options                                            */
 /* -------------------------------------------------------------------------- */

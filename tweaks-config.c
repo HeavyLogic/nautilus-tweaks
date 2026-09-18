@@ -29,14 +29,21 @@ ensure_default_config_exists (const gchar *config_path)
 
     const gchar *default_content =
         "[General]\n"
-        "# Terminal emulator (kgx, gnome-terminal, ptyxis, ghostty, alacritty, foot, kitty, terminator)\n"
-        "terminal = kgx\n\n"
-        "# Console text editor for root (micro, nano, nvim, vim)\n"
-        "editor = micro\n\n"
+        "# IDE / code editor for opening projects (code, zed, pycharm, subl)\n"
+        "ide = code\n\n"
         "# Shorten $HOME to ~ when copying paths (true / false)\n"
         "shorten_home = true\n\n"
         "# Resolve symlinks to the real target file path (true / false)\n"
         "resolve_symlinks = true\n\n"
+        "# Resolve paths on mounted remote servers to real remote server paths (true / false)\n"
+        "resolve_remotes = true\n\n"
+        "# Mode for editing files as root: \"tui\" (terminal editor) or \"admin\" (GUI editor via admin://)\n"
+        "# Note: very few GUI editors support admin:// protocol. Use gnome-text-editor to avoid issues.\n"
+        "root_editor_mode = tui\n\n"
+        "# Command template for editing files as root in TUI mode (%f will be replaced by quoted path)\n"
+        "root_editor_cmd = kgx -e sudo micro %f\n\n"
+        "# GUI text editor for editing files as root in \"admin\" mode (must support admin://, e.g. gnome-text-editor)\n"
+        "root_editor_gui = gnome-text-editor\n\n"
         "# Comma-separated list of allowed mount directories (leave empty to disable restriction)\n"
         "remote_dirs = /mnt/Remote\n\n"
         "# Emblem for mounted directories (globe, web, shared, synchronizing, default, favorite, system)\n"
@@ -54,14 +61,16 @@ ensure_default_config_exists (const gchar *config_path)
 TweaksConfig *
 tweaks_config_load (void)
 {
-    /* Ensure translations are bound before anything else */
     tweaks_i18n_init ();
 
     TweaksConfig *config = g_new0 (TweaksConfig, 1);
-    config->terminal         = g_strdup ("kgx");
-    config->editor           = g_strdup ("micro");
+    config->ide              = g_strdup ("code");
     config->shorten_home     = TRUE;
     config->resolve_symlinks = TRUE;
+    config->resolve_remotes  = TRUE;
+    config->root_editor_mode = g_strdup ("tui");
+    config->root_editor_cmd  = g_strdup ("kgx -e sudo micro %f");
+    config->root_editor_gui  = g_strdup ("gnome-text-editor");
     config->emblem           = g_strdup ("globe");
     config->remote_dirs      = g_strsplit ("/mnt/Remote", ",", -1);
     config->extra_users      = g_strsplit ("", ",", -1);
@@ -76,26 +85,17 @@ tweaks_config_load (void)
     g_autoptr (GKeyFile) keyfile = g_key_file_new ();
     if (g_key_file_load_from_file (keyfile, config_path, G_KEY_FILE_NONE, NULL))
     {
-        gchar *term = g_key_file_get_string (keyfile, "General", "terminal", NULL);
-        if (term && strlen (g_strstrip (term)) > 0)
-        {
-            g_free (config->terminal);
-            config->terminal = term;
-        }
-        else
-        {
-            g_free (term);
-        }
+        gchar *val = NULL;
 
-        gchar *ed = g_key_file_get_string (keyfile, "General", "editor", NULL);
-        if (ed && strlen (g_strstrip (ed)) > 0)
+        val = g_key_file_get_string (keyfile, "General", "ide", NULL);
+        if (val && strlen (g_strstrip (val)) > 0)
         {
-            g_free (config->editor);
-            config->editor = ed;
+            g_free (config->ide);
+            config->ide = val;
         }
         else
         {
-            g_free (ed);
+            g_free (val);
         }
 
         GError *err = NULL;
@@ -108,6 +108,44 @@ tweaks_config_load (void)
         if (!err)
             config->resolve_symlinks = rs;
         g_clear_error (&err);
+
+        gboolean rr = g_key_file_get_boolean (keyfile, "General", "resolve_remotes", &err);
+        if (!err)
+            config->resolve_remotes = rr;
+        g_clear_error (&err);
+
+        val = g_key_file_get_string (keyfile, "General", "root_editor_mode", NULL);
+        if (val && strlen (g_strstrip (val)) > 0)
+        {
+            g_free (config->root_editor_mode);
+            config->root_editor_mode = val;
+        }
+        else
+        {
+            g_free (val);
+        }
+
+        val = g_key_file_get_string (keyfile, "General", "root_editor_cmd", NULL);
+        if (val && strlen (g_strstrip (val)) > 0)
+        {
+            g_free (config->root_editor_cmd);
+            config->root_editor_cmd = val;
+        }
+        else
+        {
+            g_free (val);
+        }
+
+        val = g_key_file_get_string (keyfile, "General", "root_editor_gui", NULL);
+        if (val && strlen (g_strstrip (val)) > 0)
+        {
+            g_free (config->root_editor_gui);
+            config->root_editor_gui = val;
+        }
+        else
+        {
+            g_free (val);
+        }
 
         gchar *rd = g_key_file_get_string (keyfile, "General", "remote_dirs", NULL);
         if (rd && strlen (g_strstrip (rd)) > 0)
@@ -176,8 +214,10 @@ tweaks_config_free (TweaksConfig *config)
 {
     if (!config)
         return;
-    g_free (config->terminal);
-    g_free (config->editor);
+    g_free (config->ide);
+    g_free (config->root_editor_mode);
+    g_free (config->root_editor_cmd);
+    g_free (config->root_editor_gui);
     g_free (config->emblem);
     g_strfreev (config->remote_dirs);
     g_strfreev (config->extra_users);

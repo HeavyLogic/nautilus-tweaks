@@ -41,6 +41,13 @@ gboolean         tweaks_mount_is_inside_mount    (const gchar *path);
 gboolean         tweaks_mount_has_submounts      (const gchar *path);
 gboolean         tweaks_mount_is_server_mounted  (const TweaksRemoteServer *server);
 
+/* Resolves local path to remote server path taking into account RemotePath from ~/.ssh/config.
+ * Returns newly-allocated remote path string, or NULL if path is not on a mounted remote server. */
+gchar           *tweaks_remote_resolve_path      (const gchar *local_path);
+
+/* Reads # RemotePath: for given Host from ~/.ssh/config if specified */
+gchar           *tweaks_remote_get_configured_remote_path (const gchar *host_name);
+
 /* -------------------------------------------------------------------------- */
 /* Remote Servers Discovery (~/.ssh/config & rclone.conf)                     */
 /* -------------------------------------------------------------------------- */

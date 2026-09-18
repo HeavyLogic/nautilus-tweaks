@@ -12,10 +12,13 @@
 
 typedef struct {
     /* Action settings */
-    gchar    *terminal;
-    gchar    *editor;
+    gchar    *ide;
     gboolean  shorten_home;
     gboolean  resolve_symlinks;
+    gboolean  resolve_remotes;
+    gchar    *root_editor_mode;   /* "tui" or "admin" */
+    gchar    *root_editor_cmd;    /* Template for TUI, e.g. "ghostty -e sudo micro %f" */
+    gchar    *root_editor_gui;    /* GUI editor for admin://, e.g. "gnome-text-editor" */
 
     /* Mount settings */
     gchar   **remote_dirs;
