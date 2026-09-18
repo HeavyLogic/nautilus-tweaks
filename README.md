@@ -20,14 +20,13 @@ Have you missed this menu from WinSCP?
    - **GVfs mode (default):** Opens servers directly as native tabs in Nautilus (`sftp://` and `ftp://`) from the folder background menu. No local mount folders required, and servers are easily disconnected using native sidebar eject buttons.
    - **SSHFS / Rclone mode:** Mounts servers directly into local directories (defaults to `/mnt/Remote`).
    - Reads SFTP hosts from `~/.ssh/config` and FTP hosts from `~/.config/rclone/rclone.conf` (supports starting directory via `# RemotePath:` / `remote_path`).
-5. **Open in IDE.** Open any folder as a project in your preferred IDE (`code`, `zed`, `subl`, etc., configurable).
-6. **Manage Permissions (chmod / chown).** Works seamlessly on local files and remote SSH/SFTP servers. Full real-time sync between checkboxes, octal (`0755`), and symbolic (`rwxr-xr-x`) notation. Supports recursive applying and a separate `+X` for directories.
+5. **Open in Terminal.** Opens your preferred terminal emulator (configured via `terminal`, e.g. `ghostty`, `kgx`, `terminator`). When invoked on an SSH/SFTP server, automatically opens an interactive SSH session inside that remote directory (hidden on FTP).
+6. **Open in IDE.** Open any folder as a project in your preferred IDE (`code`, `zed`, `subl`, etc., configurable).
+7. **Manage Permissions (chmod / chown).** Works seamlessly on local files and remote SSH/SFTP servers. Full real-time sync between checkboxes, octal (`0755`), and symbolic (`rwxr-xr-x`) notation. Supports recursive applying and a separate `+X` for directories.
 
 ## Roadmap
 
-[ ] Check my Nautilus fork, maybe I can add something from there  
 [ ] Remove mount icons on Nautilus start  
-[ ] Open in terminal of choice  
 [ ] Disableable actions
 
 ## Configuration
@@ -36,6 +35,7 @@ The extension stores its configuration at:
 `~/.config/nautilus-tweaks/config.ini`
 
 Available parameters:
+- `terminal` — Preferred terminal emulator (`kgx`, `ptyxis`, `ghostty`, `terminator`, etc.; supports wrappers; defaults to `kgx`).
 - `ide` — IDE / editor for opening projects (`code`, `zed`, `subl`, etc.; defaults to `code`).
 - `shorten_home` — Replace `$HOME` with `~` when copying paths (`true` / `false`, defaults to `true`).
 - `resolve_symlinks` — Resolve symlinks to their real target path (`true` / `false`, defaults to `true`).
