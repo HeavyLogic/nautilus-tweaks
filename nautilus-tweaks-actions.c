@@ -153,7 +153,7 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
         /* Resolve remote server path if enabled */
         g_autofree gchar *remote_path = NULL;
         if (config->resolve_remotes)
-            remote_path = tweaks_remote_resolve_path (candidate_path);
+            remote_path = tweaks_remote_resolve_location_path (location);
 
         if (remote_path)
         {
@@ -330,7 +330,7 @@ nautilus_tweaks_actions_get_file_items (NautilusMenuProvider *provider, GList *f
         }
 
         /* --- Item 3: Open / Edit as root (Local paths ONLY) --- */
-        if (target_path && !tweaks_mount_is_remote (target_path))
+        if (!tweaks_remote_is_file_remote (location))
         {
             g_autofree gchar *root_label = is_dir ? g_strdup (_("Open as Root"))
                                                  : g_strdup (_("Edit as Root"));
@@ -413,7 +413,7 @@ nautilus_tweaks_actions_get_background_items (NautilusMenuProvider *provider,
     items = g_list_append (items, code_item);
 
     /* 3. Open current folder as root (Local folders ONLY) */
-    if (!tweaks_mount_is_remote (target_path))
+    if (!tweaks_remote_is_file_remote (location))
     {
         g_autofree gchar *bg_root_id = g_strdup_printf ("NautilusTweaks::BgOpenAsRoot_%u", ++g_action_counter);
         NautilusMenuItem *root_item = nautilus_menu_item_new (

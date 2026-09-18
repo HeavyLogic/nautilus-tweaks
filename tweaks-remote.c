@@ -888,3 +888,135 @@ tweaks_remote_server_build_gvfs_uri (const TweaksRemoteServer *server)
         return g_string_free (uri, FALSE);
     }
 }
+
+gboolean
+tweaks_remote_is_file_remote (GFile *location)
+{
+    if (!location)
+        return FALSE;
+
+    g_autofree gchar *uri = g_file_get_uri (location);
+    if (uri && (g_str_has_prefix (uri, "sftp://") || 
+                g_str_has_prefix (uri, "ftp://")  || 
+                g_str_has_prefix (uri, "smb://")  ||
+                g_str_has_prefix (uri, "dav://")  ||
+                g_str_has_prefix (uri, "davs://")))
+    {
+        return TRUE;
+    }
+
+    g_autofree gchar *path = g_file_get_path (location);
+    if (path)
+    {
+        if (g_str_has_prefix (path, "/run/user/") && strstr (path, "/gvfs/"))
+            return TRUE;
+
+        return tweaks_mount_is_remote (path);
+    }
+
+    return FALSE;
+}
+
+gchar *
+tweaks_remote_resolve_location_path (GFile *location)
+{
+    if (!location)
+        return NULL;
+
+    g_autofree gchar *uri = g_file_get_uri (location);
+    if (uri && (g_str_has_prefix (uri, "sftp://") || g_str_has_prefix (uri, "ftp://")))
+    {
+        g_autoptr (GUri) guri = g_uri_parse (uri, G_URI_FLAGS_NONE, NULL);
+        if (guri)
+        {
+            const gchar *path_part = g_uri_get_path (guri);
+            if (path_part && strlen (path_part) > 0)
+                return g_strdup (path_part);
+            return g_strdup ("/");
+        }
+    }
+
+    g_autofree gchar *path = g_file_get_path (location);
+    if (path)
+    {
+        /* Check if it's inside gvfs FUSE path */
+        if (g_str_has_prefix (path, "/run/user/") && strstr (path, "/gvfs/"))
+        {
+            const gchar *gvfs_sub = strstr (path, "/gvfs/");
+            const gchar *slash_after_mount = strchr (gvfs_sub + 6, '/');
+            if (slash_after_mount)
+                return g_strdup (slash_after_mount);
+            return g_strdup ("/");
+        }
+
+        return tweaks_remote_resolve_path (path);
+    }
+
+    return NULL;
+}
+
+TweaksMountInfo *
+tweaks_mount_info_get_for_location (GFile *location)
+{
+    if (!location)
+        return g_new0 (TweaksMountInfo, 1);
+
+    g_autofree gchar *uri = g_file_get_uri (location);
+    if (uri)
+    {
+        if (g_str_has_prefix (uri, "sftp://"))
+        {
+            g_autoptr (GUri) guri = g_uri_parse (uri, G_URI_FLAGS_NONE, NULL);
+            if (guri)
+            {
+                TweaksMountInfo *info = g_new0 (TweaksMountInfo, 1);
+                info->mode = TWEAKS_FS_SSHFS;
+                info->ssh_host = g_strdup (g_uri_get_host (guri));
+                info->remote_base_path = g_strdup ("/");
+                return info;
+            }
+        }
+        else if (g_str_has_prefix (uri, "ftp://"))
+        {
+            TweaksMountInfo *info = g_new0 (TweaksMountInfo, 1);
+            info->mode = TWEAKS_FS_RCLONE; /* Treat FTP as non-SSH remote */
+            return info;
+        }
+    }
+
+    g_autofree gchar *path = g_file_get_path (location);
+    if (path)
+    {
+        /* Handle /run/user/1000/gvfs/ paths */
+        if (g_str_has_prefix (path, "/run/user/") && strstr (path, "/gvfs/"))
+        {
+            if (strstr (path, "/sftp:"))
+            {
+                TweaksMountInfo *info = g_new0 (TweaksMountInfo, 1);
+                info->mode = TWEAKS_FS_SSHFS;
+                const gchar *host_start = strstr (path, "host=");
+                if (host_start)
+                {
+                    host_start += 5;
+                    const gchar *host_end = strpbrk (host_start, ",/");
+                    if (host_end)
+                        info->ssh_host = g_strndup (host_start, host_end - host_start);
+                    else
+                        info->ssh_host = g_strdup (host_start);
+                }
+                info->remote_base_path = g_strdup ("/");
+                return info;
+            }
+            else
+            {
+                TweaksMountInfo *info = g_new0 (TweaksMountInfo, 1);
+                info->mode = TWEAKS_FS_RCLONE; /* FTP / SMB */
+                return info;
+            }
+        }
+
+        return tweaks_mount_info_get_for_path (path);
+    }
+
+    return g_new0 (TweaksMountInfo, 1);
+}

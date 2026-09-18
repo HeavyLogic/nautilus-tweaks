@@ -821,19 +821,20 @@ create_permissions_window (GList *files)
         g_autoptr (GFile) loc = nautilus_file_info_get_location (file);
         if (loc)
         {
-            gchar *path = g_file_get_path (loc);
+            gchar *remote_p = tweaks_remote_resolve_location_path (loc);
+            gchar *path = remote_p ? remote_p : g_file_get_path (loc);
             if (path)
             {
                 if (!first_path)
                     first_path = g_strdup (path);
                 w->target_paths = g_list_append (w->target_paths, path);
             }
+            if (!w->mount_info)
+                w->mount_info = tweaks_mount_info_get_for_location (loc);
         }
     }
 
-    if (first_path)
-        w->mount_info = tweaks_mount_info_get_for_path (first_path);
-    else
+    if (!w->mount_info)
         w->mount_info = g_new0 (TweaksMountInfo, 1);
 
     w->owners_model = gtk_string_list_new (NULL);
@@ -1083,17 +1084,14 @@ nautilus_tweaks_permissions_get_file_items (NautilusMenuProvider *provider, GLis
     g_autoptr (GFile) loc = nautilus_file_info_get_location (first_file);
     if (loc)
     {
-        g_autofree gchar *path = g_file_get_path (loc);
-        if (path)
+        TweaksMountInfo *info = tweaks_mount_info_get_for_location (loc);
+        if (info->mode == TWEAKS_FS_RCLONE)
         {
-            TweaksMountInfo *info = tweaks_mount_info_get_for_path (path);
-            if (info->mode == TWEAKS_FS_RCLONE)
-            {
-                tweaks_mount_info_free (info);
-                return NULL;
-            }
+            /* Hide permissions on FTP and other non-SSH remote servers */
             tweaks_mount_info_free (info);
+            return NULL;
         }
+        tweaks_mount_info_free (info);
     }
 
     GList *items = NULL;
@@ -1130,13 +1128,10 @@ nautilus_tweaks_permissions_get_background_items (NautilusMenuProvider *provider
     if (!location)
         return NULL;
 
-    g_autofree gchar *target_path = g_file_get_path (location);
-    if (!target_path)
-        return NULL;
-
-    TweaksMountInfo *info = tweaks_mount_info_get_for_path (target_path);
+    TweaksMountInfo *info = tweaks_mount_info_get_for_location (location);
     if (info->mode == TWEAKS_FS_RCLONE)
     {
+        /* Hide permissions on FTP and other non-SSH remote servers */
         tweaks_mount_info_free (info);
         return NULL;
     }

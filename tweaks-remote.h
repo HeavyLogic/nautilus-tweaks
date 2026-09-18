@@ -92,4 +92,13 @@ gboolean tweaks_remote_ssh_exec_sync (const gchar  *host,
                                       gint         *exit_code,
                                       GError      **error);
 
+                                      /* Checks if GFile location is remote (works for both sshfs/rclone mounts and native GVfs URIs) */
+                                      gboolean tweaks_remote_is_file_remote (GFile *location);
+                                      
+                                      /* Resolves GFile location to real server path.
+                                       * Returns newly-allocated string (e.g. "/var/www") or NULL if location is local. */
+                                      gchar *tweaks_remote_resolve_location_path (GFile *location);
+                                      
+                                      /* Gets TweaksMountInfo from GFile location (supports sftp://, ftp://, gvfsd-fuse, sshfs, rclone) */
+                                      TweaksMountInfo *tweaks_mount_info_get_for_location (GFile *location);
 #endif /* TWEAKS_REMOTE_H */
