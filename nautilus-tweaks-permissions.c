@@ -82,6 +82,7 @@ typedef struct {
     GtkWidget *chk_recursive;
 
     gboolean   updating_from_code;
+    gboolean   is_directory;
 } PermissionsDialogWidgets;
 
 /* -------------------------------------------------------------------------- */
@@ -522,7 +523,7 @@ on_apply_clicked (GtkButton *btn, gpointer user_data)
         }
         else
         {
-            if (g_file_test (local_path, G_FILE_TEST_IS_DIR) && add_x)
+            if (w->is_directory && add_x)
                 g_string_append_printf (inner_cmd, "chmod %04lo %s", dir_mode, quoted_path);
             else
                 g_string_append_printf (inner_cmd, "chmod %04lo %s", file_mode, quoted_path);
@@ -826,7 +827,10 @@ create_permissions_window (GList *files)
             if (path)
             {
                 if (!first_path)
+                {
                     first_path = g_strdup (path);
+                    w->is_directory = nautilus_file_info_is_directory (file);
+                }
                 w->target_paths = g_list_append (w->target_paths, path);
             }
             if (!w->mount_info)

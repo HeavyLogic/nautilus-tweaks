@@ -101,6 +101,22 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
         if (!location)
             continue;
 
+        /* 1. Resolve remote server path if enabled */
+        g_autofree gchar *remote_path = NULL;
+        if (config->resolve_remotes)
+            remote_path = tweaks_remote_resolve_location_path (location);
+
+        if (remote_path)
+        {
+            if (!first)
+                g_string_append_c (text, '\n');
+            first = FALSE;
+
+            g_string_append (text, remote_path);
+            continue;
+        }
+
+        /* 2. Local path processing */
         g_autofree gchar *path = g_file_get_path (location);
         if (!path)
             continue;
@@ -150,32 +166,19 @@ on_copy_path_activated (NautilusMenuItem *item, gpointer user_data)
             g_string_append_c (text, '\n');
         first = FALSE;
 
-        /* Resolve remote server path if enabled */
-        g_autofree gchar *remote_path = NULL;
-        if (config->resolve_remotes)
-            remote_path = tweaks_remote_resolve_location_path (location);
-
-        if (remote_path)
+        /* Local path: apply shorten $HOME to ~ */
+        if (config->shorten_home && home && g_strcmp0 (candidate_path, home) == 0)
         {
-            /* Copy actual remote path as-is without local ~ shortening */
-            g_string_append (text, remote_path);
+            g_string_append (text, "~");
+        }
+        else if (config->shorten_home && home && g_str_has_prefix (candidate_path, home) && candidate_path[home_len] == '/')
+        {
+            g_string_append_c (text, '~');
+            g_string_append (text, candidate_path + home_len);
         }
         else
         {
-            /* Local path: apply shorten $HOME to ~ */
-            if (config->shorten_home && home && g_strcmp0 (candidate_path, home) == 0)
-            {
-                g_string_append (text, "~");
-            }
-            else if (config->shorten_home && home && g_str_has_prefix (candidate_path, home) && candidate_path[home_len] == '/')
-            {
-                g_string_append_c (text, '~');
-                g_string_append (text, candidate_path + home_len);
-            }
-            else
-            {
-                g_string_append (text, candidate_path);
-            }
+            g_string_append (text, candidate_path);
         }
     }
 
